@@ -1,0 +1,110 @@
+# ==========================
+# SECRETS — never let an agent read these
+# ==========================
+.env
+.env.*
+!.env.example
+!.env*.example
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+*credentials*.json
+*serviceaccount*.json
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+backend.hcl
+.netrc
+.npmrc
+.pgpass
+.aws/
+.gcloud/
+.ssh/
+.kube/
+secrets/
+
+# ==========================
+# DEPENDENCIES & BUILD ARTIFACTS
+# ==========================
+node_modules/
+dist/
+build/
+.next/
+target/
+vendor/
+*.min.js
+*.map
+*.whl
+*.egg
+*.egg-info/
+.eggs/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.tox/
+*.tsbuildinfo
+next-env.d.ts
+.turbo/
+.eslintcache
+.stylelintcache
+dbt_packages/
+
+# intermediate data artifacts (local landing / test runs)
+*.parquet
+*.avro
+*.arrow
+
+# ==========================
+# TEST & COVERAGE NOISE
+# ==========================
+coverage/
+test-results/
+playwright-report/
+*.log
+logs/
+.coverage
+.coverage.*
+htmlcov/
+junit*.xml
+
+# ==========================
+# EDITOR / OS CLUTTER
+# ==========================
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.fleet/
+.ipynb_checkpoints/
+
+# ==========================
+# TERRAFORM LOCAL EXECUTION
+# (state itself is under AI-SPECIFIC; provider lock .terraform.lock.hcl IS committed)
+# ==========================
+.terraform/
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# ==========================
+# AI-SPECIFIC (mirror into .cursorignore too)
+# ==========================
+*.tfstate
+*.tfstate.*
+*.dump
+*.sqlite
+*.db
+fixtures/large/
+.qodo/
+.aider*
+*.bak
+*.tmp
