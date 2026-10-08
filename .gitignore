@@ -108,3 +108,11 @@ fixtures/large/
 .aider*
 *.bak
 *.tmp
+*.opencode
+winget-install/
+
+
+#graphify 
+graphify-out/
+**/graphify-out/
+**/graphify-out/cache/

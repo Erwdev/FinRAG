@@ -9,3 +9,8 @@ variable "location" {
 variable "prefix" {
   type = string
 }
+
+variable "flows_sa_email" {
+  type        = string
+  description = "Email sa-flows untuk storageObjectAdmin pada bucket landing"
+}

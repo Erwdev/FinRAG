@@ -12,17 +12,19 @@ module "worker" {
 }
 
 module "bigquery" {
-  source       = "./modules/bigquery"
-  project_id   = var.project_id
-  location     = var.region
-  app_sa_email = module.iam.app_sa_email
+  source        = "./modules/bigquery"
+  project_id    = var.project_id
+  location      = var.region
+  app_sa_email  = module.iam.app_sa_email
+  flows_sa_email = module.iam.flows_sa_email
 }
 
 module "storage" {
-  source     = "./modules/storage"
-  project_id = var.project_id
-  location   = var.region
-  prefix     = var.prefix
+  source        = "./modules/storage"
+  project_id    = var.project_id
+  location      = var.region
+  prefix        = var.prefix
+  flows_sa_email = module.iam.flows_sa_email
 }
 
 module "tasks" {

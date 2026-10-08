@@ -1,7 +1,7 @@
 # FinRAG
 
 ![Status](https://img.shields.io/badge/status-48--hour%20build-orange)
-![Plan](https://img.shields.io/badge/docs-Architecture%20v2.0.4-informational)
+![Plan](https://img.shields.io/badge/docs-Architecture%20v2.0.5-informational)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
 ![Dependencies](https://img.shields.io/badge/dependencies-uv.lock-green)
 
@@ -18,14 +18,13 @@
 
 ## Executive Summary
 
-FinRAG is a private crypto portfolio copilot. It combines daily price time series, RSS news, and post data from X, then answers free-form chat questions with a structured, cited assessment. It is a decision-support tool only: no trade execution, no personalized financial advice, no promised outcomes.
+FinRAG is a private crypto portfolio copilot. It combines daily price time series, RSS news, and post data from X, then answers free-form chat questions with a structured, cited assessment. It is a decision-support tool only
 
 The system has two engineering sides working together:
 
-- **Data engineering**: scheduled ingestion from market and text sources into an Inmon-style BigQuery datawarehouse (raw, staging, marts), dbt transformations with tests, and chunk embeddings into Pinecone.
+- **Data engineering**: scheduled ingestion from market and text sources with dlt into an S3 landing bucket (Parquet), an Inmon-style MotherDuck datawarehouse (raw, staging, marts) loaded from S3 directly, dbt transformations with tests, and chunk embeddings into Pinecone.
 - **AI engineering**: a deterministic RAG pipeline (planner, parallel retrieval, temporal re-rank, context builder, final LLM with structured output) wrapped by four guardrail rails, routed through Cloudflare AI Gateway, and observed with Langfuse and Sentry.
 
-One backend service (`finrag-api` on Cloud Run) serves both the public API and the internal job runner; Cloud Tasks triggers long-running chat jobs. The frontend is a single-page Next.js terminal-style dashboard with a client-only demo mode.
 
 Full design and 48-hour build plan: [`Architecture.md`](Architecture.md).
 
@@ -33,14 +32,14 @@ Full design and 48-hour build plan: [`Architecture.md`](Architecture.md).
 
 ```
 FinRAG/
-  app/                 # FastAPI service: routes, auth, agent pipeline, guardrails
-  flows/               # Prefect flows: ingest prices, ingest news, scrape X, build and embed
-  dbt/                 # BigQuery transformations: staging views, mart tables, tests
+  app/                 # FastAPI service: routes, auth, agent pipeline, guardrails; Lambda handlers
+  flows/               # Prefect flows: ingest daily (prices + news), scrape X, build and embed
+  dbt/                 # MotherDuck transformations (dbt-duckdb): staging views, mart tables, tests
   config/              # Asset universe (fixed 10 coins)
-  scripts/             # Manual seeding (owner user)
+  scripts/             # Manual seeding (owner user), MotherDuck init
   web/                 # Next.js dashboard (App Router), empty scaffolding
   eval/                # Retrieval and guardrail evaluation sets
-  infra/terraform/     # IaC: worker, iam, bigquery, storage, tasks; state on Cloudflare R2
+  infra/terraform/     # IaC: storage, queue, iam, ecr, api, worker, ssm; state on S3
   Architecture.md      # Design document (source of truth)
 ```
 
@@ -48,26 +47,27 @@ FinRAG/
 
 ```mermaid
 flowchart LR
-  subgraph CR["Online lane: Cloud Run (GCP) - one FastAPI service, scale-out per request"]
-    API["finrag-api (FastAPI)<br/>public routes: chat, charts, feed, portfolio"]
-    JOB["Internal job route - the 'worker'<br/>/internal/jobs/{id}/run<br/>RAG pipeline in one long request"]
+  subgraph AW["Online lane: AWS us-east-1 - two Lambdas from one image"]
+    API["finrag-api (FastAPI + Mangum)<br/>Function URL, public routes:<br/>chat, charts, feed, portfolio"]
+    WRK["finrag-worker<br/>triggered by SQS<br/>RAG pipeline in one invocation"]
+    S3[("S3 landing<br/>Parquet from dlt")]
   end
 
-  subgraph PF["Batch lane: Prefect Cloud - orchestration and control plane"]
+  subgraph PF["Batch lane: Prefect Cloud (Serverless) - orchestration and control plane"]
     CTRL["Control plane<br/>schedules, retries, state, logs"]
-    RUN["Execution plane: ephemeral Python runners<br/>(one per flow run, no cluster to own)<br/>ingest -> land -> load -> dbt -> chunk -> embed"]
+    RUN["Execution plane: ephemeral runners<br/>(one per flow run, no cluster to own)<br/>ingest -> dlt -> S3 -> load -> dbt -> chunk -> embed"]
     CTRL --> RUN
   end
 
   subgraph ST["Storage and compute"]
     PG[("Neon Postgres")]
     RD[("Upstash Redis")]
-    BQ[("BigQuery datawarehouse<br/>distributed SQL: the MPP engine")]
+    MD[("MotherDuck<br/>Inmon layers: raw, stg, mart")]
     PC[("Pinecone vectors")]
   end
 
   WEB["Next.js dashboard<br/>(Vercel)"]
-  TASKS["Cloud Tasks<br/>queue and retries"]
+  SQS["SQS chat-jobs<br/>and DLQ"]
   SRC["Market, RSS, X sources"]
   CFGW["Cloudflare AI Gateway"]
   LLM["LLM providers"]
@@ -76,25 +76,26 @@ flowchart LR
 
   WEB -->|"JWT (Clerk)"| API
   WEB -.->|"live prices: WebSocket,<br/>browser direct"| SRC
-  API -->|"enqueue chat job"| TASKS
-  TASKS -->|"OIDC, internal route"| JOB
+  API -->|"enqueue chat job"| SQS
+  SQS -->|"event source mapping (IAM)"| WRK
   API --> PG
   API --> RD
-  API -->|"charts, feed"| BQ
-  JOB --> PG
-  JOB --> RD
-  JOB -->|"indicators"| BQ
-  JOB -->|"top_k search"| PC
-  JOB --> CFGW
+  API -->|"charts, feed"| MD
+  WRK --> PG
+  WRK --> RD
+  WRK -->|"indicators"| MD
+  WRK -->|"top_k search"| PC
+  WRK --> CFGW
   RUN --> SRC
-  RUN -->|"load jobs"| BQ
+  RUN -->|"dlt Parquet"| S3
+  RUN -->|"SQL load from S3"| MD
   RUN -->|"upsert vectors"| PC
-  JOB -.->|"traces"| LF
-  JOB -.->|"errors"| SE
+  WRK -.->|"traces"| LF
+  WRK -.->|"errors"| SE
   API -.->|"errors"| SE
 ```
 
-The three boxes are deliberately separate compute domains: **Cloud Run** is stateless HTTP scale-out (N replicas, one independent request each), **Prefect** is orchestration only (its managed pool creates a fresh runner per flow run — Kubernetes-Job semantics without owning a cluster), and **BigQuery** is the actual distributed/MPP compute for all warehouse SQL.
+The three boxes are deliberately separate compute domains: **Lambda** is serverless request/queue execution (scale-to-zero, one job per invocation), **Prefect** is orchestration only (its Serverless pool creates a fresh runner per flow run — Kubernetes-Job semantics without owning a cluster), and **MotherDuck (DuckDB)** is where all warehouse SQL and dbt compute run, reading the S3 landing bucket directly.
 
 Component summary:
 
@@ -102,23 +103,23 @@ Component summary:
 | --- | --- | --- |
 | Frontend | Next.js on Vercel | Terminal dashboard, demo mode, chat thread |
 | Auth | Clerk | Third-party sign-in for the single owner account |
-| Compute (online) | Cloud Run (`finrag-api`), Cloud Tasks | One FastAPI service: public routes + internal job route ("the worker"); chat jobs are single long requests with retries via Cloud Tasks |
-| Data warehouse | BigQuery datawarehouse | Inmon-style layers over open-format landing files; dbt models and tests; the only distributed (MPP) compute in the stack |
+| Compute (online) | Lambda `finrag-api` + `finrag-worker`, SQS | One image, two functions: public routes on a Function URL, and chat jobs triggered by SQS with an atomic Postgres claim and DLQ |
+| Data warehouse | MotherDuck (DuckDB) | Inmon-style layers over open-format Parquet landing files; dbt-duckdb models and tests; compute on the MotherDuck Pulse tier |
 | State | Neon Postgres, Upstash Redis | 4-table app data; job status, events, rate limits, budget counters |
 | Vectors | Pinecone | `multilingual-e5-large` index (1024 dims), embeddings and search |
-| Orchestration (batch) | Prefect Cloud | Control plane (schedules, retries, state) plus managed work pool executing ephemeral Python runners for the four flows (prices, news, X, build and embed) |
+| Orchestration (batch) | Prefect Cloud (Serverless) | Control plane (schedules, retries, state) plus an ephemeral work pool executing the three flows: ingest daily (prices + news), X once it clears its token bucket, build + embed once per day |
 | AI | Cloudflare AI Gateway, OpenCode Go, fallback providers | Single LLM egress with routing, fallback, rate limits |
 | Observability | Langfuse, Sentry | Per-stage LLM traces; application errors and alerting |
-| Infra | Terraform, Cloudflare R2 | IaC modules; remote state on R2 |
+| Infra | Terraform, S3 state | IaC modules (storage, queue, iam, ecr, api, worker, ssm); remote state on S3 with lockfile |
 
 ### Execution Model: Batch and Online
 
-The system runs in two tempos. Both are serverless; neither requires a dedicated ingestion or worker service — Prefect's managed pool and Cloud Run scale to zero.
+The system runs in two tempos. Both are serverless; neither requires a dedicated ingestion or worker service — Prefect's Serverless pool and Lambda both scale to zero.
 
 | Tempo | Runner | Work |
 | --- | --- | --- |
-| Batch (scheduled) | Prefect Cloud managed pool | ingest -> landing -> BigQuery load -> dbt build -> **chunking** -> **embedding** -> Pinecone upsert. Four flows: prices/news every 6h, build+embed 4x/day, X capped at 12 runs/day |
-| Online (per question) | Cloud Run route via Cloud Tasks | plan -> hybrid retrieval -> rail filter -> **temporal re-rank** -> context builder -> final LLM -> rails |
+| Batch (scheduled) | Prefect Cloud Serverless pool | ingest -> dlt Parquet to S3 -> SQL load into raw -> dbt build -> **chunking** -> **embedding** -> Pinecone upsert. Three flows: prices+news daily at 14:10 UTC, build+embed daily at 17:00 UTC, X in six runs across a 20-minute-spread night window |
+| Online (per question) | Lambda `finrag-worker` via SQS | plan -> hybrid retrieval -> rail filter -> **temporal re-rank** -> context builder -> final LLM -> rails |
 
 Re-rank is a deterministic score fusion at query time (no learned cross-encoder, no extra model calls):
 
@@ -143,26 +144,27 @@ Every compute choice below is a documented tradeoff, not a framework default. Fo
 | Mechanism | Role | Explicitly not |
 | --- | --- | --- |
 | Prefect control plane | Decides what runs when: schedules, retries, state, backfills | Not a worker fleet — it only orchestrates |
-| Prefect managed runners | Execution plane: a fresh isolated Python runner per flow run (Kubernetes-Job semantics, zero cluster operations) | Not MPP — each run is a single process |
-| BigQuery | The MPP engine: dbt and warehouse SQL execute distributed across BigQuery slots | Not a system you feed Spark to |
-| Cloud Run | Stateless HTTP scale-out: N replicas, each handling one independent request | Not parallelism over a single dataset |
+| Prefect Serverless runners | Execution plane: a fresh isolated Python runner per flow run (Kubernetes-Job semantics, zero cluster operations) | Not MPP — each run is a single process |
+| MotherDuck (DuckDB) | Where warehouse SQL and dbt compute run, reading the S3 landing bucket directly | Not a system you feed Spark to |
+| Lambda | Serverless job execution: one queue event or HTTP request per invocation, scale-to-zero | Not parallelism over a single dataset |
 
-- **Batch ELT, not streaming**: raw data is landed first (Parquet/JSON in GCS), loaded into `raw_*`, then transformed inside the warehouse by dbt. Discrete cron batches and BigQuery load jobs; no Kafka/Flink — stream processing buys nothing at ~300 chunks/day. Idempotent reruns make batches safe.
-- **Python only, no PySpark/JVM**: volumes are KB-MB per day. A Spark runtime would add hundreds of MB and seconds of startup to every run for zero throughput gain, while BigQuery already provides the distributed compute. Flows use `pandas` + `pyarrow` for Parquet only; the online path is pandas-free pure Python to keep Cloud Run imports fast.
+- **Batch ELT, not streaming**: raw data is landed first (Parquet in S3 via dlt), loaded into `raw_*`, then transformed by dbt.batches safe.
+- **Python only, no PySpark/JVM**: volumes are KB-MB per day. A Spark runtime would add hundreds of MB and seconds of startup to every run for zero throughput gain
 - **The only streaming is display-only**: the browser connects to Binance's public WebSocket directly for live prices; it never enters the data pipeline.
+- **Egress is a design constraint**: all AWS resources live in us-east-1, MotherDuck reads the landing bucket in-region, there is no NAT Gateway or VPC, and only small query results leave
 
 ## Concepts Explored
 
 **Data engineering**
 
-- **Inmon datawarehouse pattern**: raw, staging, and mart layers in BigQuery instead of a star schema; downstream models read open-format (Parquet/JSON) landing data without multi-table joins on ingest.
-- **Batch ELT**: land raw files first, load, transform in-warehouse with dbt — discrete idempotent batches instead of streaming, with no message broker in the path.
+- **Inmon datawarehouse pattern**: raw, staging, and mart layers in MotherDuck instead of a star schema; downstream models read open-format (Parquet) landing data without multi-table joins on ingest.
+- **Batch ELT**: land raw files first (dlt to S3), load, transform with dbt — discrete idempotent batches instead of streaming, with no message broker in the path.
 - **Orchestration**: Prefect Cloud flows with schedules, locks, and token buckets; no custom worker nodes.
-- **Control plane / execution plane split**: Prefect Cloud orchestrates; a fresh ephemeral runner executes each flow run (Kubernetes-Job semantics, zero cluster ops); BigQuery does the distributed compute. See "Scaling and Compute Rationale".
+- **Control plane / execution plane split**: Prefect Cloud orchestrates; a fresh ephemeral runner executes each flow run (Kubernetes-Job semantics, zero cluster ops); MotherDuck runs the SQL. See "Scaling and Compute Rationale".
 - **Chunking RAG**: text split at 800 chars with 100 overlap, ticker fan-out, capped under embedding input limits.
-- **Database abstraction**: warehouse access through parameterized tools and guarded read-only SQL, never free-form joins from the model.
-- **Idempotency**: deterministic landing paths, staging de-duplication, job status checks on re-run.
-- **Free-tier engineering**: quota guards for vectors, embedding tokens, crawl credits, and LLM budget.
+- **Database abstraction**: warehouse access through parameterized tools and a guarded read-only SQL tool (sqlglot dialect DuckDB, table allowlist, table-function and path rejection), never free-form joins from the model.
+- **Idempotency**: dlt incremental state in the bucket, staging de-duplication, atomic job claim on re-run.
+- **Free-tier engineering**: quota guards for vectors, embedding tokens, crawl credits, LLM budget, MotherDuck compute seconds, and Prefect minutes.
 
 **AI engineering**
 
@@ -177,21 +179,23 @@ Every compute choice below is a documented tradeoff, not a framework default. Fo
 
 **Platform and operations**
 
-- **IaC (Terraform)**: worker, IAM, BigQuery, storage, and tasks as code; state on Cloudflare R2.
-- **Scale-out vs MPP**: Cloud Run scales replicas per HTTP request, BigQuery scales slots per query — two different scaling axes chosen deliberately; no Spark/JVM anywhere at this data volume.
+- **IaC (Terraform)**: storage, queue, IAM, ECR, Lambdas, and SSM as code; state on S3 with lockfile.
+- **Serverless vs distributed compute**: Lambda scales per queue event or HTTP request, MotherDuck scales per-query compute — two different scaling axes chosen deliberately; no Spark/JVM anywhere at this data volume.
 - **Third-party auth (Clerk)**: sign-in only, no sign-up; user mapping in `app_user`, API rejects unknown subjects.
-- **Event-driven jobs**: Cloud Tasks invokes an idempotent internal route; progress exposed as ordered Redis events.
+- **Event-driven jobs**: SQS triggers an idempotent worker that claims the job atomically in Postgres; progress exposed as ordered Redis events.
 
 ## Installation
 
-Prerequisites: `uv`, `gcloud`, `terraform`, `prefect`, `dbt`, Node 22+, `vercel`.
+Prerequisites: `uv`, `aws` (AWS CLI v2), `docker` (buildx), `terraform`, `prefect`, `dbt`, Node 22+, `vercel`.
 
 ```bash
-# 1. Infrastructure (state backend on Cloudflare R2 configured later)
+# 1. Infrastructure (state bucket created manually, then Terraform)
+aws s3api create-bucket --bucket finrag-tfstate-ACCOUNT_ID --region us-east-1
 cd infra/terraform && terraform init && terraform apply
 
 # 2. Backend
 uv sync
+uv run python -m scripts.init_motherduck
 uv run alembic upgrade head
 uv run python -m scripts.seed_user --clerk-user-id user_XXXX --email you@example.com
 
@@ -204,7 +208,7 @@ prefect deploy --all
 cd web && npm install && npm run dev
 ```
 
-Deploys: `gcloud run deploy finrag-api --source .` and `cd web && vercel deploy --prod`. Environment variables are listed in `Architecture.md` section 11.7; copy `web/.env.local.example` for local values.
+
 
 ## Usage and Examples
 
@@ -216,4 +220,4 @@ Deploys: `gcloud run deploy finrag-api --source .` and `cd web && vercel deploy 
 
 ## Status
 
-Design document at `Architecture.md` v2.0.4. Repository scaffolding matches the plan; application and frontend files are empty placeholders pending the 48-hour build blocks.
+Design document at `Architecture.md` v2.0.5 (migrated from the GCP stack of v2.0.4 to AWS + MotherDuck + dlt; see §0.5 there for the change log). Repository scaffolding still matches the v2.0.4 layout for `infra/terraform/` and `scripts/`; application and frontend files are empty placeholders pending the 48-hour build blocks.
