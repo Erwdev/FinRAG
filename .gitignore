@@ -108,3 +108,17 @@ fixtures/large/
 .aider*
 *.bak
 *.tmp
+*.opencode
+winget-install/
+
+
+#graphify 
+graphify-out/
+**/graphify-out/
+**/graphify-out/cache/
+
+.pytest_cache/
+
+backlog.md
+todo.md 
+improvisation.md

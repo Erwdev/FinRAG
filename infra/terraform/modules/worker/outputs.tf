@@ -1,7 +1,7 @@
-output "uri" {
-  value = google_cloud_run_v2_service.api.uri
+output "function_name" {
+  value = aws_lambda_function.this.function_name
 }
 
-output "service_name" {
-  value = google_cloud_run_v2_service.api.name
+output "function_arn" {
+  value = aws_lambda_function.this.arn
 }

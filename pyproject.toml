@@ -1,0 +1,70 @@
+[project]
+name = "finrag"
+version = "0.1.0"
+description = "FinRAG: copilot portofolio kripto pribadi (lihat Architecture.md)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi",
+    "pydantic",
+    "pydantic-settings",
+    "sqlalchemy[asyncio]",
+    "asyncpg",
+    "alembic",
+    "pyjwt[crypto]",
+    "httpx",
+    "upstash-redis",
+    "sentry-sdk[fastapi]",
+    "tenacity",
+    "pyyaml",
+    "boto3",
+    "duckdb",
+    "sqlglot",
+    "mangum",
+    # LLM dan retrieval (Architecture.md 11.1): dibutuhkan image Lambda saat runtime.
+    "langchain",
+    "langchain-core",
+    "langchain-openai",
+    "pinecone",
+    "langfuse",
+]
+
+[project.optional-dependencies]
+# Flow Prefect (Architecture.md 11.2). Dipasang lewat pip_packages atau extra lokal.
+flows = [
+    "prefect",
+    "dlt[s3,parquet]",
+    "dbt-core",
+    "dbt-duckdb",
+    "duckdb",
+    "pyarrow",
+    "pydantic-settings",
+    "firecrawl-py",
+    "feedparser",
+    "pinecone",
+    "upstash-redis",
+    "httpx",
+    "tenacity",
+    "pyyaml",
+    "boto3",
+]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "respx",
+    # Versi sama dengan yang terkunci di uv.lock. Pin agar lint lokal dan CI identik (Improvisation 4.1).
+    "ruff==0.16.10",
+    "mypy",
+    "pre-commit",
+]
+
+[tool.uv]
+# Repositori ini bukan paket yang di-install; hanya aplikasi dan skrip.
+package = false
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

@@ -1,0 +1,83 @@
+# Prefect deployments (Architecture.md 4.5): tiga deployment harian pada work pool finrag-managed.
+# Sebelum "prefect deploy --all":
+#   1. Ganti REPLACE_* dengan nilai non-rahasia (lihat backlog.md, bagian keputusan).
+#   2. Buat Prefect Secret block sesuai nama di flows/config.py (SECRET_ENV_NAMES).
+#   3. Pastikan repositori dapat ditarik oleh git_clone (privat: tambahkan credential block).
+name: finrag
+prefect-version: ">=3.0.0"
+
+definitions:
+  work_pool: &work_pool
+    name: finrag-managed
+
+  pip_packages: &pip_packages
+    # Dependensi flows (Architecture.md 11.2). Nama extra dlt S3 perlu diverifikasi (bagian 1.1).
+    - "dlt[s3,parquet]"
+    - "dbt-core"
+    - "dbt-duckdb"
+    - "duckdb"
+    - "pyarrow"
+    - "pydantic-settings"
+    - "upstash-redis"
+    - "firecrawl-py"
+    - "feedparser"
+    - "pinecone"
+    - "httpx"
+    - "tenacity"
+    - "pyyaml"
+    - "boto3"
+
+  env: &env
+    # Nilai non-rahasia. Rahasia ada di Prefect Secret block, bukan di sini.
+    LANDING_BUCKET: REPLACE_LANDING_BUCKET
+    MD_DATABASE: finrag
+    NEWS_RSS_URL: REPLACE_NEWS_RSS_URL
+    BINANCE_BASE_URL: https://data-api.binance.vision
+    PINECONE_INDEX: finrag-text
+    EMBEDDING_MODEL: multilingual-e5-large
+    EMBEDDING_DIM: "1024"
+    PINECONE_MAX_VECTORS: "100000"
+    EMBED_MONTHLY_TOKEN_CAP: "4000000"
+    FIRECRAWL_CREDIT_BUDGET: "450"
+
+pull:
+  - prefect.deployments.steps.git_clone:
+      repository: REPLACE_WITH_REPO_URL
+      branch: main
+
+deployments:
+  - name: ingest-daily
+    entrypoint: flows/ingest_daily.py:ingest_daily
+    parameters:
+      backfill_days: 300
+    schedules:
+      - cron: "10 14 * * *"
+        timezone: "UTC"
+    work_pool: *work_pool
+    concurrency_limit: 1
+    job_variables:
+      pip_packages: *pip_packages
+      env: *env
+
+  - name: scrape-x-next-ticker
+    entrypoint: flows/scrape_x_next_ticker.py:scrape_x_next_ticker
+    schedules:
+      # 6 run per hari, selisih 20 menit (PL-1: satu request ke X per 15 menit, tanpa pengecualian).
+      - cron: "0,20,40 15-16 * * *"
+        timezone: "UTC"
+    work_pool: *work_pool
+    concurrency_limit: 1
+    job_variables:
+      pip_packages: *pip_packages
+      env: *env
+
+  - name: build-and-embed
+    entrypoint: flows/build_and_embed.py:build_and_embed
+    schedules:
+      - cron: "0 17 * * *"
+        timezone: "UTC"
+    work_pool: *work_pool
+    concurrency_limit: 1
+    job_variables:
+      pip_packages: *pip_packages
+      env: *env

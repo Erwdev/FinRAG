@@ -1,6 +1,6 @@
-# FinRAG: Rencana Eksekusi Hackathon 48 Jam (v2.0.4)
+# FinRAG: Rencana Eksekusi Hackathon 48 Jam (v2.0.5)
 
-Versi dokumen: 7 Oktober 2026 (v2.0.4, merevisi v2.0.3 pada tanggal yang sama; perubahan ada di bagian 0.4). Pengembang: satu orang (solo). Tujuan: copilot portofolio kripto pribadi yang menggabungkan data harga (time series), berita, dan teks X, lalu menjawab lewat chat dengan penilaian terstruktur dan sitasi. Hanya untuk dukungan keputusan. Tidak ada eksekusi transaksi.
+Versi dokumen: 8 Oktober 2026 (v2.0.5, merevisi v2.0.4 pada hari sebelumnya; perubahan ada di bagian 0.5). Pengembang: satu orang (solo). Tujuan: copilot portofolio kripto pribadi yang menggabungkan data harga (time series), berita, dan teks X, lalu menjawab lewat chat dengan penilaian terstruktur dan sitasi. Hanya untuk dukungan keputusan. Tidak ada eksekusi transaksi.
 
 Dokumen ini ditulis agar dapat dieksekusi oleh AI pelaksana lain tanpa pertanyaan tambahan. Bagian 14 memuat aturan kerja untuk pelaksana tersebut.
 
@@ -64,19 +64,37 @@ Bagian yang berubah: judul dan versi, 0.3, 3.3, 11.5, 11.6, 12. Bagian lain tida
 
 Bagian yang berubah: judul dan versi, 0.4, 12. Bagian lain tidak berubah dari 2.0.3.
 
+### 0.5 Perubahan 2.0.5 dari 2.0.4
+
+| # | Area | 2.0.4 | 2.0.5 | Alasan |
+| --- | --- | --- | --- | --- |
+| 1 | Cloud untuk API dan worker | Cloud Run us-east1 | AWS Lambda us-east-1 (`finrag-api`, `finrag-worker`) | Kredit AWS tersedia, tanpa server, satu region dengan MotherDuck |
+| 2 | Antrean job | Cloud Tasks memanggil route internal | SQS memicu Lambda worker | Worker tanpa ingress HTTP, tanpa verifikasi OIDC |
+| 3 | Landing | Cloud Storage | S3 | Dibaca MotherDuck langsung, tanpa egress |
+| 4 | Ingest | Kode landing buatan sendiri | dlt (filesystem S3, Parquet) | State incremental, schema, dan penulisan ke S3 sudah disediakan |
+| 5 | Warehouse | BigQuery | MotherDuck (DuckDB), database `finrag`, skema raw, stg, mart | Tanpa billing GCP, baca Parquet langsung, dbt-duckdb |
+| 6 | Orkestrasi | Prefect Cloud dengan empat deployment dan jadwal 6 jam | Prefect Cloud tetap, tiga deployment harian | Memuat dalam 500 menit Prefect Serverless |
+| 7 | IaC | Terraform GCP, state di R2 | Terraform AWS, state di S3 | Satu cloud |
+| 8 | Rahasia | Env Cloud Run | SSM Parameter Store (Lambda) dan Prefect Secret block (flows) | Rahasia tidak masuk state Terraform |
+| 9 | SQL guard | Dry run BigQuery dan batas byte | sqlglot dialek DuckDB, allowlist tabel, tolak fungsi tabel, token baca-saja | DuckDB dapat membaca berkas dan URL bila tidak dibatasi |
+| 10 | Egress | Tidak dikelola eksplisit | Aturan E1 sampai E8 dan kriteria NF-5 | Egress menjadi kendala desain |
+
+Bagian yang berubah: judul dan versi, 0.5, 1, 1.1, 1.2, 2, 3, 4.1, 4.2, 4.3, 4.5, 5.1, 5.2, 6.1, 6.3, 6.6, 7, 8.1, 8.5, 9, 11, 12, 13, 13.1, 14, 15. Bagian lain tidak berubah dari 2.0.4.
+
 ## 1. Keputusan yang Dikunci
 
 | Area | Keputusan | Catatan |
 | --- | --- | --- |
 | Frontend | Next.js (App Router) di Vercel Hobby | Halaman `/` langsung dashboard. Demo mode murni sisi klien (bagian 10). Expo dan EAS nanti untuk multi-platform |
 | Auth | Clerk, hanya sign-in untuk pemilik | Tanpa sign-up. Pemilik dibuat manual di dasbor Clerk lalu dipetakan lewat `app_user`. Pengunjung anonim tidak login dan hanya memakai demo mode di frontend |
-| API dan worker | Satu layanan FastAPI di Google Cloud Run | `--allow-unauthenticated`. Route internal diverifikasi token OIDC di aplikasi |
-| Job chat | Cloud Tasks memanggil route internal layanan yang sama | Alasan di bagian 3 |
-| Orkestrasi | Prefect Cloud (Hobby, managed pool) | Empat flow berbahasa Python |
-| Warehouse | BigQuery | Proyek GCP dengan billing aktif, tetap memakai free usage tier |
-| Landing | Google Cloud Storage | Bucket di us-east1 |
-| Postgres | Neon | Data aplikasi (OLTP), 4 tabel |
-| Redis | Upstash | Status job, event, cache, token bucket, penjaga kuota |
+| API dan worker | Dua fungsi AWS Lambda dari satu image: `finrag-api` (FastAPI lewat Mangum, Function URL publik) dan `finrag-worker` (dipicu SQS) | Tanpa VPC. Worker tanpa ingress HTTP. Alasan di bagian 3 |
+| Job chat | SQS Standard `finrag-chat-jobs` dengan DLQ, memicu `finrag-worker` | Satu pesan kecil per job (`job_id`). Alasan di bagian 3 |
+| Orkestrasi | Prefect Cloud (Hobby, Prefect Serverless sebagai work pool terkelola) | Tiga deployment: `ingest_daily`, `scrape_x_next_ticker`, `build_and_embed` |
+| Ingest | dlt dengan destination filesystem (S3), format Parquet | Dijalankan di dalam flow Prefect. Sumber kustom ditulis sebagai `@dlt.resource` |
+| Warehouse | MotherDuck (DuckDB), paket gratis, region us-east-1 | Database `finrag`, skema `raw`, `stg`, `mart`. dbt memakai `dbt-duckdb`. Komputasi transformasi di MotherDuck |
+| Landing | Amazon S3, bucket `finrag-landing-ACCOUNT_ID`, us-east-1 | Parquet hasil dlt. Dibaca MotherDuck langsung |
+| Postgres | Neon | Data aplikasi (OLTP), 4 tabel. Region aws-us-east-1, pakai pooler, NullPool di Lambda |
+| Redis | Upstash | Status job, event, cache, token bucket, penjaga kuota. Region us-east-1 |
 | Vektor | Pinecone Starter | AWS us-east-1, gratis |
 | Embedding | Pinecone Inference, model `multilingual-e5-large` | Dimensi 1024. Kuota gratis 5 juta token per bulan |
 | LLM | OpenCode Go, diakses lewat Cloudflare AI Gateway | Gateway menjadi satu-satunya titik keluar LLM. Fallback: OpenRouter, dikonfigurasi di gateway |
@@ -85,11 +103,12 @@ Bagian yang berubah: judul dan versi, 0.4, 12. Bagian lain tidak berubah dari 2.
 | Scraping | Firecrawl, khusus X | X wajib masuk (PL-1). Diuji pada jam pertama |
 | Guardrail | Fungsi deterministik bergaya LangChain guardrails (4 rail) | NeMo Guardrails tidak dipakai. Alasan di bagian 6.5 |
 | Aset | Universe tetap 10 koin kripto (bagian 4.4) | Portofolio hanya boleh berisi koin dalam universe |
-| Region | us-east1 (GCP), us-east-1 (AWS) | Dekat dengan Pinecone |
+| Region | us-east-1 untuk seluruh AWS, MotherDuck, Neon, Upstash, dan Pinecone | Aturan E1 |
+| Infrastruktur | Terraform, state di S3 (use_lockfile) | Rahasia Lambda di SSM, rahasia flows di Prefect Secret block |
 
 Perubahan dari versi sebelumnya ada di bagian 0.
 
-Satu penyimpangan yang disengaja: ingestion harga memakai polling REST klines lewat flow Prefect, bukan websocket di backend, karena websocket membutuhkan proses yang selalu hidup. Harga live di dashboard diambil browser langsung dari websocket publik Binance (bagian 10). Websocket di backend dan Redpanda masuk backlog.
+Satu penyimpangan yang disengaja: ingestion harga memakai polling REST klines lewat flow Prefect, bukan websocket di backend, karena websocket membutuhkan proses yang selalu hidup. Harga live di dashboard diambil browser langsung dari websocket publik Binance (bagian 10). Websocket di backend dan Redpanda masuk backlog. Ingest memakai dlt di dalam flow Prefect.
 
 ### 1.1 Status verifikasi fakta
 
@@ -99,14 +118,22 @@ Diverifikasi pada 7 Oktober 2026 dari halaman resmi dan sumber sekunder:
 - Pinecone Inference pada Starter: 5 juta token embedding per bulan per model, 250 ribu token per menit. `multilingual-e5-large` berdimensi 1024 dengan batas input sekitar 507 token. `llama-text-embed-v2` juga tersedia (dimensi 1024 bawaan) dan dapat menjadi alternatif.
 - Upstash Redis gratis: 256 MB dan 500 ribu command per bulan.
 - Neon gratis: 0.5 GB penyimpanan dan 100 CU-jam per proyek per bulan, autosuspend setelah 5 menit idle.
-- Cloud Run (billing berbasis request): gratis 2 juta request, 180 ribu vCPU-detik, 360 ribu GiB-detik per bulan.
 - Firecrawl gratis: 500 kredit **sekali pakai** (bukan bulanan), 2 request bersamaan. Paket berbayar termurah Hobby sekitar $16 per bulan untuk 3000 kredit.
 - Together AI: tidak ada free trial, akses wajib membeli kredit minimum $5. Karena itu dikeluarkan dari desain.
-- BigQuery sandbox: 10 GB storage dan 1 TB query per bulan, tabel kedaluwarsa 60 hari, tidak mendukung DML dan streaming. Karena itu proyek memakai billing aktif.
 - EU AI Act Pasal 50 (pengungkapan chatbot sebagai AI) berlaku sejak 2 Agustus 2026 dan tidak ikut ditunda oleh Digital Omnibus. Pengungkapan harus ada pada titik interaksi, bukan hanya di syarat dan ketentuan.
 - LangChain guardrails: middleware bawaan (PII, human-in-the-loop, batas pemanggilan model dan tool) dan hook kustom `before_agent` dan `after_agent`. PII middleware memerlukan `langchain>=1.3.2`.
 
-Belum diverifikasi, wajib dicek pelaksana sebelum bergantung padanya: kuota gratis Cloud Tasks dan Cloud Storage, Prefect (500 menit per bulan, 5 deployment), Clerk (apakah sign-up dapat dimatikan atau dibatasi pada paket gratis), biaya kredit Firecrawl untuk halaman X, apakah Binance menolak IP Cloud Run dan Prefect (kode 451), akses RSS sumber berita, serta ID model di gateway LLM. Belum diverifikasi juga: format URL dan penulisan nama model pada custom provider Cloudflare AI Gateway untuk OpenCode Go, apakah kunci penyedia dapat disimpan di Cloudflare untuk custom provider, kuota log dan rate limit pada paket gratis Cloudflare AI Gateway, cara menulis aturan fallback ke OpenRouter, serta kuota tier Hobby Langfuse dan masa retensi datanya.
+Belum diverifikasi, wajib dicek pelaksana sebelum bergantung padanya:
+
+- Dari tabel paket yang ditempel pemilik, belum dicek ulang di halaman resmi: MotherDuck gratis memberi 3 pengguna aktif internal, 2 service account, 10 GB storage, 10 jam compute Pulse per bulan, hanya instance Pulse, preset role. Prefect Hobby memberi 5 deployment dan 500 menit Prefect Serverless (periode penagihan belum dipastikan).
+- MotherDuck: apakah akun dapat dibuat di us-east-1, apakah server MotherDuck membaca S3 privat lewat secret (kunci IAM atau assume role), versi DuckDB yang didukung (harus sama dengan `duckdb` terkunci), apakah preset role atau read scaling token menghasilkan akses baca-saja, apakah `enable_external_access=false` dapat dipakai pada koneksi `md:`, apakah meter compute Pulse terlihat di dasbor. MotherDuck Flights berbayar dan hanya di Business dan Enterprise (dari tabel pemilik), tidak dipakai.
+- dlt: tata letak berkas destination filesystem (dugaan `{table_name}/{load_id}.{file_id}.parquet`), apakah state pipeline dapat dipulihkan dari bucket pada work pool yang efemeral, nama extra pip yang benar untuk S3 dan Parquet, perilaku `max_table_nesting=0` terhadap kolom array (`tickers`), dan cara menulis sumber kustom (Firecrawl untuk X).
+- Prefect Serverless: apakah dependensi (`dlt`, `dbt-duckdb`, `pinecone`) dapat dipasang lewat `pip_packages` pada setiap run, berapa menit satu run (termasuk pemasangan), cara menarik kode dari repositori privat, dan tipe work pool yang benar.
+- AWS: aturan paket gratis akun baru (kredit dan masa berlaku, apa yang terjadi setelah habis), kuota gratis Lambda, SQS, CloudWatch Logs, ECR, SSM, dan kuota egress gratis ke internet per bulan.
+- AWS: kuota konkurensi Lambda akun baru dan apakah `reserved_concurrent_executions` dapat dipasang.
+- AWS: izin yang diwajibkan untuk Function URL publik (`lambda:InvokeFunctionUrl` dan apakah `lambda:InvokeFunction` ikut diwajibkan).
+- Binance: apakah menolak IP Prefect Serverless (kode 451 atau 403).
+- Yang tetap belum diverifikasi dari versi lama: kuota Cloud Storage tidak relevan lagi. Clerk (sign-up dapat dimatikan atau dibatasi), biaya kredit Firecrawl untuk halaman X, akses RSS berita, ID model di gateway LLM, format URL dan nama model custom provider Cloudflare AI Gateway, penyimpanan kunci penyedia di Cloudflare, kuota log dan rate limit gateway, cara menulis fallback ke OpenRouter, serta kuota dan retensi Langfuse Hobby.
 
 ### 1.2 Anggaran free tier
 
@@ -118,11 +145,13 @@ Perkiraan kasar. Ukur ulang setelah 24 jam pertama berjalan.
 | Pinecone Inference | 5 juta token per bulan | Kira-kira 1 juta token per bulan | `EMBED_MONTHLY_TOKEN_CAP` (4000000). Counter Redis dengan taksiran karakter dibagi 4. Bila terlampaui, lewati embedding baru dan catat `embed.skipped_quota` |
 | Upstash Redis | 256 MB, 500 ribu command per bulan | Sekitar 150 command per job chat, ditambah polling dashboard | Polling adaptif, TTL cache, alert 80 persen di dasbor Upstash |
 | Neon | 0.5 GB, 100 CU-jam per bulan | Hitungan MB. Compute hanya menyala saat API menyentuh DB | Cache lookup `app_user` 5 menit di memori, pakai pooler |
-| Cloud Run | 2 juta request, 180 ribu vCPU-detik, 360 ribu GiB-detik | Satu job maksimum 60 detik pada 1 vCPU dan 1 GiB | `--max-instances 2`, budget alert |
+| AWS Lambda | Belum diverifikasi: 1 juta request dan 400 ribu GB-detik per bulan | Satu job maksimum 100 detik pada 1769 MB (sekitar 173 GB-detik per job, kira-kira 2 ribu job per bulan) | Batas waktu pipeline 100 detik (`asyncio.timeout`, Lambda 120 detik), `maximum_concurrency` 3, budget alert AWS |
+| SQS | Belum diverifikasi: 1 juta request per bulan | Hitungan ratusan | Budget alert |
+| S3, ECR, SSM, CloudWatch Logs | Belum diverifikasi | Hitungan MB | Budget alert, retensi log 14 hari, lifecycle ECR (simpan 3 image) |
+| MotherDuck | 10 GB storage, 10 jam compute Pulse per bulan (belum diverifikasi) | Load dari S3 dan dbt 1 kali sehari, query dashboard dan chat banyak ter-cache | `MD_MONTHLY_SECONDS_CAP` (28800 detik). Counter Redis `md:seconds:{yyyymm}`. Bila terlampaui, API melayani cache lama dan menolak query baru dengan 503 |
 | Firecrawl | 500 kredit sekali pakai | 1 kredit per scrape X (verifikasi), maksimum 12 per hari | `FIRECRAWL_CREDIT_BUDGET` (450). Bila terlampaui, X dilewati dan sistem turun ke berita saja |
-| BigQuery | 10 GB storage, 1 TB query per bulan | Hitungan MB | `maximum_bytes_billed` 50 MB per query |
-| GCS, Cloud Tasks | Belum diverifikasi | Sangat kecil | Budget alert |
-| Prefect Hobby | Belum diverifikasi: 500 menit, 5 deployment | 4 deployment | Ukur menit per run, tuas di bagian 4.5 |
+| Prefect Hobby | 5 deployment, 500 menit Prefect Serverless (dari tabel pemilik, belum diverifikasi) | 3 deployment, perkiraan 330 menit (tabel di 4.5, asumsi belum terukur) | Ukur menit per run di 24 jam pertama. Tuas di 4.5. Alert 80 persen |
+| Egress AWS ke internet | Belum diverifikasi: kuota gratis bulanan | Kurang dari 1 GB (bagian C) | Aturan E1 sampai E8, NF-5 |
 | Cloudflare AI Gateway | Paket gratis, kuota log dan fitur belum diverifikasi | Satu panggilan planner dan satu panggilan final per pertanyaan | Rate limit di gateway sebagai lapisan kedua. `DAILY_LLM_BUDGET_USD` tetap di aplikasi karena biaya langganan custom provider mungkin tidak dihitung gateway |
 | Langfuse Hobby | Belum diverifikasi | Beberapa ribu unit per bulan | Pantau penggunaan di dasbor Langfuse. Bila hampir penuh, turunkan sampling trace |
 
@@ -137,41 +166,45 @@ flowchart LR
     CLERK["Clerk<br/>sign-in dan JWT"]
   end
 
-  subgraph GCPL["2. GCP us-east1"]
-    API["FastAPI finrag-api<br/>Cloud Run<br/>route publik dan internal"]
-    TASKS["Cloud Tasks<br/>queue chat-jobs"]
-    GCS[("Cloud Storage<br/>landing")]
-    BQ[("BigQuery<br/>raw, stg, mart")]
+  subgraph AWSL["2. AWS us-east-1"]
+    API["Lambda finrag-api<br/>FastAPI via Mangum<br/>Function URL"]
+    SQS["SQS chat-jobs<br/>dan DLQ"]
+    WRK["Lambda finrag-worker<br/>run_chat_job"]
+    BKT[("S3 landing<br/>Parquet dari dlt")]
+    SSM["SSM Parameter Store<br/>rahasia Lambda"]
   end
 
-  subgraph STATE["3. State dan vektor"]
+  subgraph MDL["3. MotherDuck us-east-1"]
+    MD[("finrag<br/>raw, stg, mart")]
+  end
+
+  subgraph STATE["4. State dan vektor"]
     PG[("Neon Postgres<br/>4 tabel")]
     REDIS[("Upstash Redis<br/>job, event, cache, guard")]
     PC[("Pinecone<br/>finrag-text")]
   end
 
-  subgraph ORCH["4. Prefect Cloud"]
-    F1["ingest_prices"]
-    F2["ingest_news"]
-    F3["scrape_x_next_ticker"]
-    F4["build_and_embed"]
+  subgraph ORCH["5. Prefect Cloud, Serverless"]
+    F1["ingest_daily<br/>dlt: harga dan berita"]
+    F3["scrape_x_next_ticker<br/>dlt: X"]
+    F4["build_and_embed<br/>dbt dan embedding"]
   end
 
-  subgraph SRC["5. Sumber data"]
+  subgraph SRC["6. Sumber data"]
     S1["Binance REST klines<br/>fallback CoinGecko"]
     S2["RSS satu sumber berita"]
     S3["X<br/>cashtag OR handle"]
     S4["Binance WebSocket publik"]
   end
 
-  subgraph AIL["6. Layanan AI"]
+  subgraph AIL["7. Layanan AI"]
     CFGW["Cloudflare AI Gateway<br/>routing, fallback, rate limit, log"]
     GW["OpenCode Go<br/>planner, final"]
     EMB["Pinecone Inference<br/>multilingual-e5-large"]
     FC["Firecrawl<br/>khusus X"]
   end
 
-  subgraph OBS["7. Observabilitas dan eskalasi"]
+  subgraph OBS["8. Observabilitas dan eskalasi"]
     LF["Langfuse"]
     SE["Sentry"]
     HO["Webhook handoff<br/>ke pemilik"]
@@ -183,28 +216,36 @@ flowchart LR
   API -.->|"verifikasi JWKS"| CLERK
   API --> PG
   API --> REDIS
-  API -->|"enqueue job"| TASKS
-  TASKS -->|"HTTP dan OIDC"| API
-  API -->|"chart, feed, SQL read-only"| BQ
-  API -->|"vector search"| PC
-  API -->|"embedding query"| EMB
-  API --> CFGW
-  CFGW --> GW
+  API -->|"enqueue job"| SQS
+  API -->|"chart, feed, read-only"| MD
   API -->|"harga terakhir"| S1
-  API -.->|"trace"| LF
+  SQS -->|"event source mapping, IAM"| WRK
+  WRK --> PG
+  WRK --> REDIS
+  WRK -->|"indikator, SQL read-only"| MD
+  WRK -->|"vector search"| PC
+  WRK -->|"embedding query"| EMB
+  WRK --> CFGW
+  CFGW --> GW
+  WRK -->|"harga terakhir"| S1
+  WRK -.->|"trace"| LF
+  WRK -.->|"error"| SE
   API -.->|"error"| SE
-  API -.->|"handoff"| HO
+  WRK -.->|"handoff"| HO
+  API -.->|"rahasia saat cold start"| SSM
+  WRK -.->|"rahasia saat cold start"| SSM
 
   S1 --> F1
-  S2 --> F2
+  S2 --> F1
   S3 --> F3
   F3 -->|"scrape X"| FC
-  F1 --> GCS
-  F2 --> GCS
-  F3 --> GCS
+  F1 -->|"dlt Parquet"| BKT
+  F3 -->|"dlt Parquet"| BKT
+  F1 -.->|"SQL muat dari S3"| MD
+  F3 -.->|"SQL muat dari S3"| MD
   F3 <-->|"token bucket dan antrean"| REDIS
-  GCS -->|"load job"| BQ
-  F4 -->|"dbt build"| BQ
+  BKT -->|"MotherDuck membaca S3 langsung"| MD
+  F4 -->|"dbt build"| MD
   F4 -->|"chunk baru"| EMB
   EMB --> PC
   F4 -.->|"event build"| REDIS
@@ -217,11 +258,11 @@ flowchart LR
   classDef auth fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
   classDef obs fill:#FBEAF0,stroke:#993556,color:#4B1528
 
-  class WEB,API,TASKS compute
-  class GCS,BQ,PG,REDIS,PC store
+  class WEB,API,SQS,WRK compute
+  class BKT,MD,PG,REDIS,PC,SSM store
   class CFGW,GW,EMB,FC ai
   class S1,S2,S3,S4 source
-  class F1,F2,F3,F4 orch
+  class F1,F3,F4 orch
   class CLERK auth
   class LF,SE,HO obs
 ```
@@ -230,74 +271,84 @@ Legenda warna: biru = komputasi dan API, hijau = penyimpanan, ungu = model dan l
 
 ## 3. Deployment
 
-### 3.1 Satu layanan di Cloud Run
+### 3.1 Dua fungsi Lambda
 
-Cloud Run setara dengan FastAPI Cloud untuk kebutuhan ini dan menghilangkan batasan Hobby FastAPI Cloud (0.1 vCPU, 512 MB, status beta, batas durasi request tidak jelas). Seluruh backend adalah satu aplikasi `app.main:app` yang di-deploy sebagai satu layanan `finrag-api`.
+API dan worker chat adalah satu paket Python `app/` yang di-deploy sebagai dua fungsi Lambda dari satu image kontainer (ECR). Flow Prefect tidak berjalan di AWS (bagian 4.5). Tanpa VPC (aturan E3): Lambda di luar VPC punya akses internet keluar bawaan, sehingga tidak butuh NAT Gateway.
+
+| Fungsi | Handler | Pemicu | Timeout | Memori |
+| --- | --- | --- | --- | --- |
+| `finrag-api` | `app.lambda_api.handler` (Mangum, `lifespan="off"`) | Function URL publik (auth NONE, CORS ditangani FastAPI) | 30 detik | 1024 MB |
+| `finrag-worker` | `app.lambda_worker.handler` | SQS event source mapping, batch size 1, `maximum_concurrency` 3 | 120 detik | 1769 MB |
 
 Konsekuensi desain:
 
-- Scale-to-zero. Request pertama setelah idle mengalami cold start. Mitigasi: `--cpu-boost`, impor LangChain secara lazy di dalam route internal, dan untuk hari demo ke recruiter set `--min-instances 1` sementara (idle ber-biaya, kembalikan ke 0 setelah demo).
-- Cloud Run memberi CPU hanya selama request aktif (billing berbasis request). Karena itu job chat tidak dijalankan sebagai background task setelah respons, melainkan sebagai satu request panjang yang dipicu Cloud Tasks.
-- Layanan bersifat publik agar browser dapat memanggilnya. Route `/internal/*` ditolak kecuali token OIDC Google valid (bagian 9.1).
-- Satu paket Python `app/` dengan satu set dependensi (bagian 11.1). Flow Prefect memakai extra `flows`.
+- Lambda membekukan eksekusi setelah handler selesai. Karena itu job chat tidak berjalan sebagai tugas latar. `POST /chat` hanya menyimpan job dan mengirim pesan SQS, lalu worker menjalankan seluruh pipeline dalam satu invocation.
+- Cold start: impor LangChain lazy di dalam `run_chat_job`, ekstensi `motherduck` DuckDB dipasang saat build image (tidak diunduh saat cold start), koneksi dan klien HTTP dibuat di level modul agar dipakai ulang pada invocation hangat. Opsional: pemicu EventBridge tiap 5 menit memanggil `GET /health`. Untuk hari demo, nyalakan provisioned concurrency 1 pada `finrag-api` sementara (berbiaya), matikan setelah demo.
+- Wajib `flush`: `langfuse.flush()` dan `sentry_sdk.flush()` dipanggil di akhir `run_chat_job` karena proses dibekukan setelah handler kembali.
+- Koneksi Neon: `NullPool` dan `statement_cache_size=0` (pooler Neon mode transaksi).
+- DuckDB di Lambda: `home_directory='/tmp'`.
+- Function URL publik tanpa autentikasi. Setiap route selain `/health` menolak token yang tidak dipetakan ke `app_user` (bagian 9). Batas biaya akibat penyalahgunaan: `reserved_concurrent_executions = 5` pada `finrag-api` bila kuota akun mengizinkan (bagian 1.1), ditambah budget alert AWS.
+- Tidak ada route internal dan tidak ada ingress HTTP untuk worker. Worker hanya dapat dipicu lewat IAM oleh SQS.
 
 ### 3.2 Alur job chat
 
-1. `POST /chat` (atau `POST /chat/daily-brief`) membuat baris `chat_job` di Postgres dan `job:{id}` di Redis (status `queued`), lalu membuat task Cloud Tasks bernama sama dengan `job_id` (dedupe otomatis).
-2. Cloud Tasks memanggil `POST /internal/jobs/{job_id}/run` pada layanan yang sama dengan token OIDC.
-3. Route internal menjalankan seluruh pipeline dalam satu request dan menulis event ke Redis di setiap tahap.
-4. Frontend polling `GET /jobs/{job_id}?after_seq=N` setiap 2 detik (3 detik setelah 20 detik) sampai status terminal.
-5. Idempoten: jika status job bukan `queued`, route internal langsung membalas 200 tanpa bekerja.
+1. `POST /chat` (atau `POST /chat/daily-brief`) membuat baris `chat_job` di Postgres dan `job:{id}` di Redis (status `queued`), lalu mengirim satu pesan ke SQS dengan isi `{"job_id": "..."}`. Bila pengiriman SQS gagal, job ditandai `failed` dan API membalas 503.
+2. SQS memicu `finrag-worker` (batch size 1).
+3. Worker mengklaim job secara atomik di Postgres (`UPDATE chat_job SET status='running', updated_at=now() WHERE id=:id AND (status='queued' OR (status IN ('running','planning','retrieving','ranking','generating','validating') AND updated_at < now() - interval '150 seconds')) RETURNING id`). Bila tidak ada baris yang diklaim, handler kembali tanpa kerja (idempoten, aman untuk pengiriman ganda SQS Standard). Klausa job basi memungkinkan percobaan ulang SQS mengambil alih job yang prosesnya mati.
+4. Worker menjalankan seluruh pipeline dengan batas waktu internal 100 detik (`asyncio.timeout`). Bila terlampaui: status `failed`, `error_code=timeout`, event `job.failed`. Event ditulis ke Redis di setiap tahap.
+5. Frontend polling `GET /jobs/{job_id}?after_seq=N` setiap 2 detik (3 detik setelah 20 detik) sampai status terminal.
+6. Konfigurasi antrean: `visibility_timeout` 720 detik (6 kali timeout fungsi), `maxReceiveCount` 2 lalu DLQ `finrag-chat-jobs-dlq`, retensi pesan 1 hari. Pada percobaan terakhir, kegagalan menandai job `failed` sebelum handler melempar error.
 
 ### 3.3 Perintah deploy
 
-Persiapan sekali. Infrastruktur GCP lewat Terraform (state di Cloudflare R2 dikonfigurasi nanti, bagian 12):
+Persiapan sekali (bucket state dibuat manual karena Terraform belum punya backend):
 
 ```bash
+aws s3api create-bucket --bucket finrag-tfstate-ACCOUNT_ID --region us-east-1
+aws s3api put-bucket-versioning --bucket finrag-tfstate-ACCOUNT_ID --versioning-configuration Status=Enabled
 cd infra/terraform
 terraform init
 terraform apply
 ```
 
-Aplikasi:
+Kunci akses dua IAM user dibuat manual (agar tidak masuk state Terraform), lalu disimpan: `finrag-prefect-writer` ke Prefect Secret block, `finrag-md-reader` ke secret persisten MotherDuck (lewat `scripts/init_motherduck.py`):
+
+```bash
+aws iam create-access-key --user-name finrag-prefect-writer
+aws iam create-access-key --user-name finrag-md-reader
+```
+
+Image (Lambda menolak manifest dengan attestation, wajib `--provenance=false`):
+
+```bash
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com
+docker buildx build --platform linux/amd64 --provenance=false -t ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/finrag-api:$GIT_SHA --push .
+terraform apply -var image_tag=$GIT_SHA
+```
+
+Inisialisasi sekali dan aplikasi:
 
 ```bash
 uv sync
+uv run python -m scripts.init_motherduck
 uv run alembic upgrade head
 uv run python -m scripts.seed_user --clerk-user-id user_XXXX --email you@example.com
 ```
 
-Layanan (Dockerfile di akar repositori). Env dibaca dari berkas `.env.prod` yang tidak di-commit:
+Rahasia Lambda diisi sekali ke SSM (nilai tidak masuk Terraform state):
 
 ```bash
-gcloud run deploy finrag-api \
-  --source . \
-  --region us-east1 \
-  --allow-unauthenticated \
-  --service-account sa-app@PROJECT_ID.iam.gserviceaccount.com \
-  --cpu 1 --memory 1Gi --cpu-boost \
-  --timeout 300 \
-  --concurrency 4 \
-  --min-instances 0 --max-instances 2 \
-  --env-vars-file .env.prod.yaml
+aws ssm put-parameter --name /finrag/prod/MOTHERDUCK_TOKEN_RO --type SecureString --value '...' --overwrite
 ```
 
-Queue Cloud Tasks:
-
-```bash
-gcloud tasks queues create chat-jobs \
-  --location us-east1 \
-  --max-attempts 2 \
-  --max-dispatches-per-second 2 \
-  --max-concurrent-dispatches 3
-```
-
-Prefect (dari akar repositori, setelah `prefect cloud login`):
+Prefect (dari akar repositori, setelah `prefect cloud login`; verifikasi tipe work pool untuk Prefect Serverless):
 
 ```bash
 prefect work-pool create finrag-managed --type prefect:managed
 prefect deploy --all
 ```
+
+Rahasia flows (token MotherDuck baca-tulis, kunci `finrag-prefect-writer`, Pinecone, Firecrawl, Upstash) disimpan sebagai Prefect Secret block, dan dibaca di dalam flow.
 
 Frontend:
 
@@ -305,17 +356,20 @@ Frontend:
 cd web && vercel deploy --prod
 ```
 
-### 3.4 Akun layanan GCP (IAM)
+### 3.4 IAM dan identitas
 
-| Akun | Dipakai oleh | Peran | Kunci |
+| Identitas | Dipakai oleh | Izin | Kunci |
 | --- | --- | --- | --- |
-| `sa-app` | `finrag-api` di Cloud Run | Cloud Tasks Enqueuer, BigQuery Job User, BigQuery Data Viewer pada dataset `finrag_mart`, Service Account User pada `sa-tasks-invoker` | Tidak perlu kunci (identitas runtime) |
-| `sa-tasks-invoker` | Identitas OIDC pada task | Tidak butuh peran lain karena layanan publik. Aplikasi memverifikasi email dan audience token | Tidak perlu kunci |
-| `sa-flows` | Prefect (di luar GCP) | BigQuery Data Editor pada `finrag_raw`, `finrag_stg`, `finrag_mart`, Storage Object Admin pada bucket landing, BigQuery Job User | Kunci JSON di Prefect Secret block |
+| `finrag-api-role` | Lambda `finrag-api` | `sqs:SendMessage` pada `finrag-chat-jobs`, `ssm:GetParametersByPath` pada `/finrag/prod/`, tulis CloudWatch Logs | Tidak ada (role) |
+| `finrag-worker-role` | Lambda `finrag-worker` | Terima, hapus, dan baca atribut pesan pada `finrag-chat-jobs` (untuk event source mapping), `ssm:GetParametersByPath`, tulis CloudWatch Logs | Tidak ada (role) |
+| `finrag-prefect-writer` | Flow Prefect menulis lewat dlt | `s3:PutObject`, `s3:GetObject`, `s3:ListBucket`, `s3:DeleteObject` hanya pada prefix `dlt/` bucket landing | Satu kunci statis di Prefect Secret block. Rotasi per kuartal |
+| `finrag-md-reader` | MotherDuck membaca S3 | `s3:GetObject` dan `s3:ListBucket` pada bucket landing, baca-saja | Satu kunci statis di secret persisten MotherDuck (verifikasi alternatif role, bagian 1.1). Rotasi per kuartal |
 
-Langkah proyek GCP: aktifkan billing (diperlukan Cloud Run dan Cloud Tasks, dan diperlukan agar DML BigQuery berjalan), pasang budget alert dengan ambang kecil, dan pastikan semua dataset, bucket, queue, dan layanan berada di `us-east1`. Dataset BigQuery diberi default table expiration `Never`.
+Bucket landing: blokir semua akses publik, enkripsi SSE-S3, tolak trafik non-TLS (`aws:SecureTransport`), tanpa versioning, lifecycle: batalkan multipart tak lengkap setelah 1 hari dan kedaluwarsakan objek setelah 365 hari. ECR: lifecycle simpan 3 image terakhir. CloudWatch Logs: retensi 14 hari (aturan E8).
 
-Catatan penting BigQuery: sandbox tanpa billing tidak mendukung DML dan streaming, padahal dbt incremental memakai MERGE atau DELETE. Karena itu proyek harus memakai billing aktif. Free usage tier tetap berlaku.
+MotherDuck: dua service account (batas paket). `sa-md-flows` dengan token baca-tulis (`MOTHERDUCK_TOKEN_RW`) untuk Prefect. `sa-md-app` dengan token baca-saja (`MOTHERDUCK_TOKEN_RO`) untuk `finrag-api` dan `finrag-worker` (verifikasi akses baca-saja). Akun pengembang memakai satu dari tiga pengguna aktif.
+
+Langkah akun AWS: aktifkan MFA pada root dan jangan membuat kunci root, pakai profil SSO atau IAM user dengan MFA untuk Terraform, pasang AWS Budgets dengan ambang kecil (peringatan 50 persen dan 90 persen), aktifkan Cost Anomaly Detection, dan catat tanggal berakhirnya kredit AWS di README.
 
 ## 4. Rekayasa Data
 
@@ -329,31 +383,30 @@ flowchart LR
     A3["X via Firecrawl"]
   end
 
-  subgraph EXT["Ekstraksi: Prefect flows"]
-    E1["ingest_prices"]
-    E2["ingest_news"]
+  subgraph EXT["Ekstraksi: flow Prefect dengan dlt"]
+    E1["ingest_daily"]
     E3["scrape_x_next_ticker"]
   end
 
-  subgraph LAND["Landing: Cloud Storage"]
-    L1["prices/source/date/ticker.parquet"]
-    L2["news/date/source_id.json"]
-    L3["x/date/ticker/run_id.json"]
+  subgraph LAND["Landing: S3 us-east-1"]
+    L1["dlt/landing/raw_ohlcv/*.parquet"]
+    L2["dlt/landing/raw_articles/*.parquet"]
+    L3["dlt/landing/raw_tweets/*.parquet"]
   end
 
-  subgraph RAWD["BigQuery finrag_raw"]
+  subgraph RAWD["MotherDuck finrag.raw"]
     R1[("raw_ohlcv")]
     R2[("raw_articles")]
     R3[("raw_tweets")]
   end
 
-  subgraph STGD["finrag_stg: view dbt"]
+  subgraph STGD["finrag.stg: view dbt"]
     T1["stg_ohlcv<br/>dedupe, cast"]
     T2["stg_articles<br/>dedupe, bersihkan"]
     T3["stg_tweets<br/>dedupe, bersihkan"]
   end
 
-  subgraph MARTD["finrag_mart: dbt"]
+  subgraph MARTD["finrag.mart: dbt"]
     M1[("mart_ohlcv_1d")]
     M2[("mart_indicators")]
     M3[("mart_text_chunks")]
@@ -371,14 +424,14 @@ flowchart LR
   end
 
   A1 --> E1
-  A2 --> E2
+  A2 --> E1
   A3 --> E3
   E1 --> L1
-  E2 --> L2
+  E1 --> L2
   E3 --> L3
-  L1 -->|"load job"| R1
-  L2 -->|"load job"| R2
-  L3 -->|"load job"| R3
+  L1 -->|"INSERT dari read_parquet S3"| R1
+  L2 -->|"INSERT dari read_parquet S3"| R2
+  L3 -->|"INSERT dari read_parquet S3"| R3
   R1 --> T1
   R2 --> T2
   R3 --> T3
@@ -405,7 +458,7 @@ flowchart LR
   classDef qual fill:#FBEAF0,stroke:#993556,color:#4B1528
 
   class A1,A2,A3 src
-  class E1,E2,E3 orch
+  class E1,E3 orch
   class L1,L2,L3 land
   class R1,R2,R3 raw
   class T1,T2,T3 stg
@@ -416,25 +469,47 @@ flowchart LR
 
 ### 4.2 Landing
 
-Bucket: `gs://finrag-landing-PROJECT_ID`, lokasi us-east1. Path deterministik agar rerun idempoten:
+Bucket: `s3://finrag-landing-ACCOUNT_ID`, region us-east-1. Ingest memakai dlt dengan destination filesystem:
 
-| Sumber | Path | Format |
-| --- | --- | --- |
-| Harga | `prices/{source}/{yyyy-mm-dd}/{ticker}.parquet` | Parquet |
-| Berita | `news/{yyyy-mm-dd}/{source_id}.json` | JSON, satu artikel per berkas |
-| X | `x/{yyyy-mm-dd}/{ticker}/{run_id}.json` | JSON, satu run per berkas |
+```python
+pipeline = dlt.pipeline(
+    pipeline_name="finrag_ingest_daily",   # nama tetap, agar state incremental terpulihkan
+    destination=dlt.destinations.filesystem(bucket_url="s3://finrag-landing-ACCOUNT_ID/dlt"),
+    dataset_name="landing",
+)
+pipeline.run(source, loader_file_format="parquet")
+```
 
-Setiap berkas ditulis dengan nama yang sama saat rerun (menimpa), lalu dimuat ke BigQuery dengan load job `WRITE_APPEND`. Kolom `_ingested_at` dan `_source_file` ditambahkan saat load. Duplikat dibuang di lapisan staging.
+Aturan dlt:
 
-### 4.3 Tabel BigQuery
+1. Setiap tabel raw adalah satu `@dlt.resource` (`raw_ohlcv`, `raw_articles`, `raw_tweets`) dengan `write_disposition="append"` dan `max_table_nesting=0`. Tanpa `max_table_nesting=0`, dlt memecah daftar bersarang (misalnya `tickers`) menjadi tabel anak. Kolom daftar disimpan sebagai JSON dan dipetakan ke `VARCHAR[]` di dbt (verifikasi, bagian 1.1).
+2. Binance memakai `dlt.sources.incremental("ts")` sehingga run berikutnya tidak menarik ulang data lama. State disimpan di bucket (work pool Prefect bersifat efemeral, jadi state tidak boleh bergantung pada disk lokal).
+3. `raw_ohlcv` memakai `schema_contract={"columns": "freeze"}` agar perubahan kolom dari sumber menggagalkan run dengan jelas. Tabel teks memakai `evolve`.
+4. Tata letak berkas mengikuti bawaan dlt (dugaan: `dlt/landing/{table_name}/{load_id}.{file_id}.parquet`, verifikasi). dlt menambah kolom `_dlt_load_id` dan `_dlt_id`. Jangan menulis path buatan sendiri.
+5. Prefect hanya memegang IAM user `finrag-prefect-writer` (tulis ke prefix `dlt/`). Byte masuk ke AWS gratis (aturan E2).
 
-Dataset: `finrag_raw`, `finrag_stg`, `finrag_mart`. Semua tabel raw dipartisi per tanggal dan diklaster per `ticker`.
+Pemuatan ke MotherDuck (aturan E2): setelah `pipeline.run`, flow membaca `load_id` dari hasil run dan mengirim satu pernyataan SQL ke MotherDuck dengan token baca-tulis. MotherDuck membaca S3 sendiri lewat secret persisten `finrag_landing` (kunci IAM user `finrag-md-reader`). Hanya berkas dari load itu yang dimuat:
+
+```sql
+INSERT INTO raw.raw_ohlcv
+SELECT ticker, ts, open, high, low, close, volume, source, _dlt_load_id,
+       now() AS _ingested_at, filename AS _source_file
+FROM read_parquet('s3://finrag-landing-ACCOUNT_ID/dlt/landing/raw_ohlcv/{load_id}.*.parquet', filename = true);
+```
+
+Fallback bila MotherDuck tidak dapat membaca S3 privat (bagian 1.1): sesi DuckDB di dalam flow Prefect membaca berkas dari S3 lalu menjalankan `INSERT` yang sama ke `md:`. Data S3 yang dibaca dari luar AWS terhitung egress. Pada ukuran MB nilainya jauh di bawah kuota gratis, tetapi catat di README. Fallback kedua: dlt menulis langsung ke destination `motherduck` untuk tabel raw dan S3 hanya menjadi arsip.
+
+Duplikat dibuang di lapisan staging (append, bukan timpa). Rerun aman karena dedupe dan state incremental dlt.
+
+### 4.3 Tabel MotherDuck
+
+Database: `finrag` di MotherDuck, skema `raw`, `stg`, `mart` (disebut `finrag.raw`, `finrag.stg`, `finrag.mart`). Tabel raw dibuat idempoten oleh `scripts/init_motherduck.py` (DDL di `dbt/ddl/raw.sql`). Tanpa partisi dan klaster (DuckDB tidak memakainya, volume hitungan MB).
 
 | Tabel | Kunci alami | Kolom utama |
 | --- | --- | --- |
-| `raw_ohlcv` | `ticker, ts, source` | open, high, low, close, volume, source (`binance` atau `coingecko`), `_ingested_at`, `_source_file` |
-| `raw_articles` | `article_id` (hash url) | url, title, summary, published_at, source, tickers (array), `_ingested_at` |
-| `raw_tweets` | `tweet_id` | text, author, created_at, ticker_query, url, `_ingested_at` |
+| `raw_ohlcv` | `ticker, ts, source` | open, high, low, close, volume, source (`binance` atau `coingecko`), `_dlt_load_id`, `_ingested_at`, `_source_file` |
+| `raw_articles` | `article_id` (hash url) | url, title, summary, published_at, source, tickers (array), `_dlt_load_id`, `_ingested_at` |
+| `raw_tweets` | `tweet_id` | text, author, created_at, ticker_query, url, `_dlt_load_id`, `_ingested_at` |
 
 Model dbt:
 
@@ -443,14 +518,16 @@ Model dbt:
 | `stg_ohlcv` | view | Dedupe `qualify row_number() over (partition by ticker, ts, source order by _ingested_at desc) = 1`, cast tipe, buang harga nol atau negatif |
 | `stg_articles` | view | Dedupe per `article_id`, bersihkan HTML dari title dan summary |
 | `stg_tweets` | view | Dedupe per `tweet_id`, buang retweet murni, normalisasi spasi dan URL |
-| `mart_ohlcv_1d` | tabel | Satu baris per `ticker, trade_date` (UTC), harga penutupan akhir hari, kolom `is_closed` (benar bila `trade_date` lebih kecil dari tanggal UTC hari ini). Bila ada Binance dan CoinGecko untuk hari yang sama, Binance menang |
+| `mart_ohlcv_1d` | tabel | Satu baris per `ticker, trade_date` (UTC), harga penutupan akhir hari, kolom `is_closed` (benar bila `trade_date < (now() at time zone 'UTC')::date`). Bila ada Binance dan CoinGecko untuk hari yang sama, Binance menang |
 | `mart_indicators` | tabel | Hanya dari bar tertutup. SMA20, SMA50, SMA200, Bollinger(20,2) atas dan bawah, band_pos, stdev20 dari return harian, roc20, drawdown dari tertinggi 252 hari |
-| `mart_text_chunks` | incremental (insert_overwrite per tanggal) | Teks bersih terpotong menjadi chunk dengan metadata |
+| `mart_text_chunks` | incremental (`incremental_strategy: delete+insert`, `unique_key: chunk_id`) | Teks bersih terpotong menjadi chunk dengan metadata |
 | `mart_feed` | view | Satu baris per `source_id` (artikel atau tweet): `source_type, source_id, tickers, headline, url, published_at`. Dipakai panel feed |
+
+dbt memakai adapter dbt-duckdb dengan path `md:finrag`. Komputasi berjalan di MotherDuck, Prefect hanya mengirim SQL. Tambahkan makro `generate_schema_name` yang memakai nama skema kustom apa adanya (`raw`, `stg`, `mart`). Profil di `dbt/profiles.yml` membaca `MOTHERDUCK_TOKEN_RW` dari env, diisi dari Prefect Secret block. Sesi dbt diset `SET TimeZone='UTC'` agar perhitungan tanggal pada `mart_ohlcv_1d` memakai UTC.
 
 Fallback CoinGecko hanya menyediakan harga penutupan harian. Untuk baris sumber `coingecko`, open, high, dan low diisi sama dengan close (indikator hanya memakai close, sehingga aman) dan uji `high >= low` tetap lulus.
 
-EMA12 dan EMA26 tidak dihitung di dbt karena rekursi tidak praktis di SQL BigQuery. EMA dihitung di Python dengan fungsi murni (tanpa pandas) di `app/indicators.py`, dipakai oleh route chart dan tool agent. Rumus: `ema_t = alpha * close_t + (1 - alpha) * ema_(t-1)` dengan `alpha = 2 / (span + 1)`.
+EMA12 dan EMA26 tidak dihitung di dbt karena rekursi tidak praktis di SQL dbt. EMA dihitung di Python dengan fungsi murni (tanpa pandas) di `app/domain/market/indicators.py`, dipakai oleh route chart dan tool agent. Rumus: `ema_t = alpha * close_t + (1 - alpha) * ema_(t-1)` dengan `alpha = 2 / (span + 1)`.
 
 Aturan chunking: teks RSS (title ditambah summary) dipotong 800 karakter dengan overlap 100, maksimum 4 chunk per artikel (umumnya satu chunk). Tweet satu chunk. Teks yang menyebut beberapa ticker menghasilkan satu baris chunk per ticker, sehingga `chunk_id = hash(source_id, chunk_index, ticker)`. Satu chunk harus tetap di bawah sekitar 500 token (batas input model embedding).
 
@@ -458,7 +535,7 @@ Kolom `mart_text_chunks`: `chunk_id, ticker, source_type (news atau tweet), sour
 
 Pengujian dbt: `unique` dan `not_null` pada kunci, `accepted_values` pada `source_type`, uji kustom bahwa `close > 0` dan `high >= low`, serta freshness pada sumber `raw_ohlcv` (batas 36 jam) dan `raw_tweets` (batas 72 jam).
 
-Pengendalian biaya BigQuery: semua query dari aplikasi memakai `maximum_bytes_billed` 50 MB dan filter partisi.
+Pengendalian biaya MotherDuck: semua query dari aplikasi memakai token baca-saja, `LIMIT`, timeout 10 detik (`connection.interrupt`), dan counter `md:seconds:{yyyymm}` (bagian 1.2 dan 8.1).
 
 ### 4.4 Universe aset
 
@@ -492,28 +569,38 @@ Harga dalam USDT diperlakukan setara USD untuk MVP.
 
 ### 4.5 Flow Prefect
 
-Empat deployment (batas paket Hobby adalah lima):
+Tiga deployment (batas paket Hobby adalah lima) pada work pool `finrag-managed` (Prefect Serverless). Seluruh pekerjaan sehari jatuh dalam satu jendela malam (14:10 sampai 17:00 UTC, atau sekitar 21:10 sampai 00:00 WIB) agar daily brief pagi memakai data segar. Jadwal dipangkas dari versi 2.0.4 karena bar harga bersifat harian dan anggaran menit Prefect terbatas.
 
 | Flow | Jadwal (UTC) | Pekerjaan | Keluaran |
 | --- | --- | --- | --- |
-| `ingest_prices` | `0 */6 * * *` dan on-demand | Binance klines 1d untuk seluruh universe (5 bar terakhir per run, 300 bar pada run pertama lewat parameter `backfill_days`), fallback CoinGecko `market_chart` harian bila Binance gagal atau menolak IP. Tulis Parquet ke landing, load ke `raw_ohlcv`, set `freshness:prices` | `raw_ohlcv` |
-| `ingest_news` | `0 */6 * * *` | Tarik satu RSS (`NEWS_RSS_URL`), cocokkan alias per ticker, tulis JSON ke landing, load ke `raw_articles`, set `freshness:news`. Tanpa Firecrawl | `raw_articles` |
-| `scrape_x_next_ticker` | `*/15 14-16 * * *` (maksimum 12 run per hari) | Cek anggaran Firecrawl, ambil token bucket, pilih satu ticker paling lama tidak di-scrape, scrape X lewat Firecrawl, tulis landing, load ke `raw_tweets` | `raw_tweets` |
-| `build_and_embed` | `20 1,7,13,19 * * *` | `dbt build` dengan test, hitung chunk baru, cek kuota embedding, embedding lewat Pinecone Inference, upsert Pinecone, cek freshness | `mart_*`, Pinecone |
+| `ingest_daily` | `10 14 * * *` dan on-demand | Dua resource dlt dalam satu flow: Binance klines 1d untuk seluruh universe (5 bar terakhir per run, 300 bar pada run pertama lewat parameter `backfill_days`, fallback CoinGecko `market_chart` harian bila Binance gagal atau menolak IP) dan satu RSS (`NEWS_RSS_URL`, cocokkan alias per ticker). Tulis Parquet ke S3 lewat dlt, muat ke `raw_ohlcv` dan `raw_articles` (bagian 4.2), set `freshness:prices` dan `freshness:news` | `raw_ohlcv`, `raw_articles` |
+| `scrape_x_next_ticker` | `0,20,40 15-16 * * *` (6 run per hari, selisih 20 menit) | Cek anggaran Firecrawl, ambil token bucket, pilih satu ticker paling lama tidak di-scrape, scrape X lewat Firecrawl, tulis lewat dlt, muat ke `raw_tweets` | `raw_tweets` |
+| `build_and_embed` | `0 17 * * *` | `dbt build` dengan test, hitung chunk baru, cek kuota embedding, embedding lewat Pinecone Inference, upsert Pinecone, cek freshness | `mart_*`, Pinecone |
 
-Anggaran menit managed pool belum terverifikasi dan belum terukur (instalasi dependensi pada setiap run dapat memakan waktu, terutama dbt). Ukur pada 24 jam pertama. Tuas bila mendekati 400 menit per bulan, urut dari yang pertama dipakai: turunkan `build_and_embed` ke 2 run per hari, turunkan `ingest_prices` dan `ingest_news` ke 2 run per hari, lalu kurangi jendela run X.
+Dependensi (`dlt`, `dbt-duckdb`, `pinecone`, dan lainnya) dipasang lewat `pip_packages` pada setiap run, dan kode ditarik dari repositori lewat langkah `git_clone` di `prefect.yaml` (verifikasi, bagian 1.1). Pemasangan memakan menit, jadi masuk anggaran.
+
+Anggaran menit Prefect Serverless (500 menit, asumsi menit per run belum terukur, wajib diukur di 24 jam pertama):
+
+| Flow | Run per bulan | Asumsi menit per run | Menit |
+| --- | --- | --- | --- |
+| `ingest_daily` | 30 | 2 | 60 |
+| `scrape_x_next_ticker` | 180 | 1 | 180 |
+| `build_and_embed` | 30 | 3 | 90 |
+| Total | | | 330 dari 500 |
+
+Tuas bila pengukuran mendekati 400 menit, urut dari yang pertama dipakai: turunkan `scrape_x_next_ticker` ke 3 run per hari, lalu kurangi `build_and_embed` bila sempat dua kali. Bila hasil ukur di bawah 300 menit, tambahkan `ingest_daily` dan `build_and_embed` kedua pada pagi hari.
 
 Aturan PL-1 (X, wajib):
 
-1. Token bucket di Redis: `SET x:bucket {run_id} NX EX 900`. Jika gagal, flow selesai dengan event `ingest.x.skipped_rate_limited`. Maksimum satu request ke X per 15 menit, tanpa pengecualian.
-2. Antrean rotasi ada di Redis sorted set `x:due` (anggota ticker, skor waktu scrape terakhir). Flow mengisi anggota yang belum ada dengan skor 0 (`ZADD NX`), mengambil skor terendah (`ZRANGE x:due 0 0`), lalu memperbarui skor setelah scrape (`ZADD`). Tidak ada tabel Postgres untuk antrean.
+1. Token bucket di Redis: `SET x:bucket {run_id} NX EX 900`. Jika gagal, flow selesai dengan event `ingest.x.skipped_rate_limited`. Maksimum satu request ke X per 15 menit, tanpa pengecualian. `scrape_x_next_ticker` memakai `retries=0` dan batas konkurensi deployment 1, agar retry Prefect tidak melanggar batas.
+2. Antrean rotasi ada di Redis sorted set `x:due` (anggota ticker, skor waktu scrape terakhir). Flow mengisi anggota yang belum ada dengan skor 0 (`ZADD NX`), mengambil skor terendah (`ZRANGE x:due 0 0`), lalu memperbarui skor setelah scrape (`ZADD`). Tidak ada tabel Postgres untuk antrean. Dengan 6 run per hari, tiap ticker di-scrape sekitar tiap 1.7 hari.
 3. Anggaran Firecrawl: sebelum scrape, baca `fc:used:total`. Bila lebih besar atau sama dengan `FIRECRAWL_CREDIT_BUDGET`, selesai dengan event `ingest.x.skipped_budget`. Setelah scrape, tambahkan kredit terpakai.
-4. Idempoten: path landing deterministik dan dedupe `tweet_id` di staging.
+4. Idempoten: state incremental dlt dan dedupe `tweet_id` di staging.
 5. Batas 10 ticker dijamin oleh universe tetap.
 6. Query: nilai `x_query` dari universe (cashtag OR handle resmi).
 7. Uji pada jam pertama apakah Firecrawl dapat mengambil halaman pencarian X. Halaman itu sering meminta login. Jika gagal, sumber diganti di balik interface `TextSource` tanpa mengubah arsitektur, dan berita tetap menjadi sumber teks utama. Keputusan uji dicatat di README.
 
-Binance: basis URL dapat diatur lewat `BINANCE_BASE_URL` (coba `https://data-api.binance.vision` yang khusus data pasar, lalu `https://api.binance.com`). Jika endpoint menolak IP (kode 451 atau 403) dari Cloud Run atau managed pool Prefect, `PriceSource` otomatis memakai CoinGecko (kunci demo opsional lewat `COINGECKO_API_KEY`). Uji dari kedua lingkungan pada jam pertama.
+Binance: basis URL dapat diatur lewat `BINANCE_BASE_URL` (coba `https://data-api.binance.vision` yang khusus data pasar, lalu `https://api.binance.com`). Jika endpoint menolak IP (kode 451 atau 403) dari Prefect Serverless atau Lambda, `PriceSource` otomatis memakai CoinGecko (kunci demo opsional lewat `COINGECKO_API_KEY`). Uji dari kedua lingkungan pada jam pertama.
 
 ## 5. RAG
 
@@ -533,7 +620,7 @@ flowchart TB
   end
 
   subgraph RET["Retrieval paralel"]
-    TS["Time series<br/>tool BigQuery mart<br/>SQL guard"]
+    TS["Time series<br/>tool MotherDuck mart<br/>SQL guard"]
     PX["Harga terakhir<br/>Binance atau CoinGecko"]
     PF["Portofolio<br/>Postgres"]
     VS["Vector search<br/>Pinecone<br/>filter ticker dan waktu"]
@@ -612,15 +699,15 @@ Tool terparameter (jalur utama, tanpa SQL bebas):
 | `get_last_prices` | tickers | `PriceSource.latest` (Binance, fallback CoinGecko, fallback close terakhir) | Harga terakhir dan waktunya |
 | `get_price_history` | ticker, days (maksimum 365) | `mart_ohlcv_1d` | Seri close |
 | `get_portfolio` | tidak ada | Postgres `holding`, dikali harga terakhir | Posisi, nilai, bobot |
-| `run_readonly_sql` | sql | `finrag_mart` | Cadangan untuk pertanyaan ad hoc |
+| `run_readonly_sql` | sql | `finrag.mart` | Cadangan untuk pertanyaan ad hoc |
 
-Pengaman `run_readonly_sql` (wajib semua):
+Pengaman `run_readonly_sql` (wajib semua). DuckDB dapat membaca berkas lokal dan URL lewat fungsi tabel, sehingga pembatasan harus berlapis:
 
-1. Parse dengan `sqlglot` dialek BigQuery. Tolak jika bukan satu pernyataan `SELECT`.
-2. Tabel yang boleh: `finrag_mart.mart_ohlcv_1d`, `finrag_mart.mart_indicators`. Selain itu ditolak.
-3. Tambahkan `LIMIT 500` jika tidak ada atau lebih besar.
-4. Dry run dulu. Tolak jika bytes diproses lebih dari 50 MB. Eksekusi dengan `maximum_bytes_billed` 50 MB.
-5. Dijalankan oleh `sa-app` yang hanya punya Data Viewer pada `finrag_mart`.
+1. Parse dengan `sqlglot` dialek DuckDB. Tolak jika bukan tepat satu pernyataan `SELECT` (CTE hanya boleh berisi `SELECT`). Tolak `COPY`, `ATTACH`, `INSTALL`, `LOAD`, `PRAGMA`, `SET`, `CALL`, `EXPORT`, dan DDL atau DML apa pun.
+2. Setiap sumber pada FROM dan JOIN harus berupa tabel bernama (bukan fungsi tabel, bukan string path), dinormalisasi dengan database dan skema bawaan, lalu harus ada dalam allowlist `finrag.mart.mart_ohlcv_1d` dan `finrag.mart.mart_indicators`. Selain itu ditolak.
+3. Tolak setiap fungsi yang namanya diawali `read_`, `glob`, `parquet_`, `duckdb_`, `pragma_`, `md_`, atau bernama `query`, `getenv`, `current_setting`, `load_extension`, dan tolak literal yang berbentuk path atau URL (`s3://`, `http`, `file:`).
+4. Tambahkan `LIMIT 500` jika tidak ada atau lebih besar. Jalankan dengan timeout 10 detik (timer yang memanggil `connection.interrupt()`) dan tambahkan durasinya ke `md:seconds:{yyyymm}`.
+5. Dijalankan dengan token baca-saja (`MOTHERDUCK_TOKEN_RO`), dan bila didukung `SET enable_external_access = false` pada koneksi (verifikasi, bagian 1.1). Allowlist dan token baca-saja adalah lapisan yang wajib, dua lapisan lainnya tambahan.
 
 Serialisasi konteks indikator (ilustrasi, angka memakai titik desimal tanpa pemisah ribuan):
 
@@ -665,7 +752,7 @@ Cache: sebelum membuat job, cari di Postgres job `daily_brief` berstatus `comple
 
 ### 6.1 Routing model
 
-Aplikasi hanya mengenal satu basis URL LLM, yaitu endpoint Cloudflare AI Gateway yang kompatibel OpenAI. Gateway meneruskan permintaan ke OpenCode Go sebagai custom provider. Kunci OpenCode Go disimpan di Cloudflare (verifikasi apakah tersedia untuk custom provider). Aplikasi mengirim token gateway lewat header `cf-aig-authorization`, sehingga kunci penyedia tidak ada di Cloud Run. Autentikasi gateway diaktifkan agar pihak luar tidak dapat memakai URL gateway.
+Aplikasi hanya mengenal satu basis URL LLM, yaitu endpoint Cloudflare AI Gateway yang kompatibel OpenAI. Gateway meneruskan permintaan ke OpenCode Go sebagai custom provider. Kunci OpenCode Go disimpan di Cloudflare (verifikasi apakah tersedia untuk custom provider). Aplikasi mengirim token gateway lewat header `cf-aig-authorization`, sehingga kunci penyedia tidak ada di Lambda. Autentikasi gateway diaktifkan agar pihak luar tidak dapat memakai URL gateway.
 
 Pergantian penyedia, aturan fallback, rate limit, dan cache diubah di dasbor Cloudflare tanpa deploy ulang. ID model persis diatur lewat env dan dikonfirmasi di gateway.
 
@@ -687,6 +774,8 @@ Batas biaya: counter harian `cost:llm:{yyyymmdd}` di Redis. Jika melewati `DAILY
 ### 6.2 System prompt dan template
 
 Prompt ditulis dalam bahasa Inggris karena model mengikuti instruksi dengan lebih konsisten. Jawaban kepada pengguna mengikuti bahasa pengguna.
+
+Implementasi: teks default disimpan di `config/prompts.yaml` (kunci `planner_system`, `planner_user`, `final_system`, `final_user`, `repair`), dimuat oleh `app/agent/prompt_store.py` (`get_prompts()`), lalu dibungkus `ChatPromptTemplate` di `app/agent/prompts.py`. Tidak ada teks prompt di kode Python. Sumber dipilih env `PROMPT_SOURCE` (`file` default, atau `langfuse`) dengan label `PROMPT_LABEL` (default `production`). Mode `langfuse` memuat prompt `finrag-planner`, `finrag-final` (chat) dan `finrag-repair` (text) dari Langfuse, placeholder `{{var}}` dikonversi ke `{var}`. Setiap grup yang gagal jatuh ke YAML. Ubah prompt cukup di YAML atau di Langfuse, tanpa mengubah kode.
 
 Planner, system prompt:
 
@@ -819,7 +908,7 @@ Label `action` ditampilkan di UI sebagai "Penilaian data: tahan, tambah, kurangi
 
 ### 6.3 Penggunaan LangChain
 
-LangChain dipakai untuk: `ChatPromptTemplate` (template di atas), `ChatOpenAI` dengan `base_url` gateway, `with_structured_output(Plan)` dan `with_structured_output(Recommendation)`, serta `.with_fallbacks([...])`. Orkestrasi tahap memakai fungsi async biasa (`run_chat_job`), bukan agent bebas, agar langkahnya deterministik dan mudah diuji. Impor LangChain dilakukan lazy di dalam `run_chat_job` untuk menekan cold start.
+LangChain dipakai untuk: `ChatPromptTemplate` (template di atas), `ChatOpenAI` dengan `base_url` gateway, `with_structured_output(Plan)` dan `with_structured_output(Recommendation)`, serta `.with_fallbacks([...])`. Orkestrasi tahap memakai fungsi async biasa (`run_chat_job`), bukan agent bebas, agar langkahnya deterministik dan mudah diuji. Impor LangChain dilakukan lazy di dalam `run_chat_job` untuk menekan cold start. Panggil `langfuse.flush()` di akhir `run_chat_job` karena Lambda membeku setelah handler selesai.
 
 Konstruksi klien memakai basis URL gateway dan header autentikasi gateway:
 
@@ -847,7 +936,7 @@ Guardrail LangChain berbasis middleware (`before_agent`, `after_agent`, `PIIMidd
 
 Penjelasan rail cakupan: "skrip yang disetujui" adalah isi field skema `Recommendation` yang lolos pola di atas, ditambah teks pengungkapan yang selalu ditulis server (bagian 6.6). Pelanggaran langsung di-handoff, bukan diperbaiki, karena ini pernyataan yang tidak boleh keluar. Rail yang sama berlaku di tahap planner: intent `needs_human` langsung menghasilkan `handoff` tanpa retrieval dan tanpa LLM final.
 
-Implementasi acuan (`app/guardrails/rails.py`):
+Implementasi acuan (`app/domain/guardrails/rails.py`):
 
 ```python
 import re
@@ -1040,7 +1129,7 @@ NeMo Guardrails tidak mewajibkan server yang hidup terus. Pustaka itu dapat dipa
 
 ### 6.6 Pengungkapan AI, tanggung jawab finansial, dan serah ke manusia
 
-Tiga teks ini ditulis server dari berkas `app/guardrails/disclosures.py`, bukan oleh model. Bahasa dipilih dari `Plan.language` (bawaan `id`).
+Tiga teks ini ditulis server dari berkas `app/domain/guardrails/disclosures.py`, bukan oleh model. Bahasa dipilih dari `Plan.language` (bawaan `id`).
 
 | Kunci | Indonesia | Inggris |
 | --- | --- | --- |
@@ -1052,7 +1141,7 @@ Aturan:
 
 1. Pengungkapan AI (`ai`) ditampilkan permanen di dekat kolom chat sebelum pesan pertama (titik interaksi) dan pada setiap respons asisten. Sesuai EU AI Act Pasal 50(1).
 2. Pernyataan tanggung jawab (`responsibility`) menyertai setiap hasil terminal: `completed`, `insufficient`, `blocked`, dan `handoff`.
-3. Handoff: saat status menjadi `handoff`, server menyimpan `handoff_reason`, mengirim event `handoff.created` ke `events:system`, memanggil `HANDOFF_WEBHOOK_URL` bila diisi (Discord atau Telegram), dan mengirim pesan Sentry. Pengguna melihat teks `handoff`, tidak melihat jawaban otomatis. Pemilik meninjau lewat `GET /handoffs` dan menutup dengan `POST /handoffs/{job_id}/resolve`.
+3. Handoff: saat status menjadi `handoff`, server menyimpan `handoff_reason`, mengirim event `handoff.created` ke `events:system`, memanggil `HANDOFF_WEBHOOK_URL` bila diisi (Discord atau Telegram), dan mengirim pesan Sentry (dan `sentry_sdk.flush()`). Pengguna melihat teks `handoff`, tidak melihat jawaban otomatis. Pemilik meninjau lewat `GET /handoffs` dan menutup dengan `POST /handoffs/{job_id}/resolve`.
 4. Jangan memberi tahu pengguna bahwa percakapan sudah ditangani manusia sebelum pemilik menutupnya. Teks `handoff` hanya menyatakan bahwa percakapan diteruskan.
 5. Demo mode: respons chat adalah rekaman keluaran sistem dengan data dummy. Banner demo, pengungkapan AI, dan pernyataan tanggung jawab tetap tampil. Teksnya disalin ke `web/lib/disclosures.ts` dan wajib sama dengan `disclosures.py`.
 
@@ -1106,6 +1195,7 @@ erDiagram
     text error_code
     int latency_ms
     timestamptz created_at
+    timestamptz updated_at
     timestamptz finished_at
   }
 ```
@@ -1116,9 +1206,10 @@ Aturan skema:
 - `app_user.role` hanya `owner` (CHECK, kolom dipertahankan untuk perluasan). Baris diisi manual dengan `scripts/seed_user.py`. Tidak ada endpoint pembuatan pengguna.
 - `chat_job.status` salah satu dari: `queued, running, planning, retrieving, ranking, generating, validating, completed, blocked, insufficient, handoff, failed, cancelled` (CHECK).
 - `chat_job.result` memuat objek `Recommendation` dan larik `evidence` (id, ticker, source_type, url, published_at, snippet, skor) sebagai salinan saat job selesai, sehingga sitasi tetap bisa dibuka tanpa route evidence terpisah.
-- Indeks: `(user_id, created_at desc)` dan `(kind, holdings_hash, created_at desc)` pada `chat_job`, dan `(session_id, created_at)`.
+- Indeks: `(user_id, created_at desc)`, `(kind, holdings_hash, created_at desc)`, dan `(status, updated_at)` pada `chat_job`, dan `(session_id, created_at)`.
+- `chat_job.updated_at` diubah pada setiap perubahan status dan dipakai klaim job basi di bagian 3.2.
 - Riwayat percakapan sebuah sesi adalah daftar `chat_job` dengan `session_id` yang sama, diurutkan waktu (pertanyaan dari `question`, jawaban dari `result`). Tidak ada tabel pesan.
-- Migrasi memakai Alembic. Koneksi Neon memakai SSL dan pooler untuk lingkungan serverless.
+- Migrasi memakai Alembic. Koneksi Neon memakai SSL dan pooler (host `-pooler`), SQLAlchemy NullPool, dan `statement_cache_size=0` pada asyncpg, karena Lambda membekukan proses dan menahan koneksi antar invocation.
 - Flow Prefect tidak mengakses Postgres sama sekali, sehingga compute Neon hanya menyala karena API.
 
 ## 8. Redis (Upstash): Kunci dan Nama Event
@@ -1143,6 +1234,7 @@ Aturan skema:
 | `freshness:{source}` | String | Waktu ingest sukses terakhir (prices, news, x, build) | tanpa TTL |
 | `cost:llm:{yyyymmdd}` | Counter | Biaya LLM harian dalam mikro-dolar | 2 hari |
 | `embed:tokens:{yyyymm}` | Counter | Taksiran token embedding bulanan | 40 hari |
+| `md:seconds:{yyyymm}` | Counter | Jumlah detik query MotherDuck dari aplikasi (penjaga 10 jam compute) | 40 hari |
 | `fc:used:total` | Counter | Total kredit Firecrawl terpakai (kredit gratis sekali pakai) | tanpa TTL |
 | `events:system` | List | Event sistem (dipangkas `LTRIM` ke 200 entri terakhir) | tanpa TTL |
 
@@ -1229,18 +1321,19 @@ stateDiagram-v2
 sequenceDiagram
   autonumber
   participant U as Web
-  participant A as API Cloud Run
+  participant A as Lambda finrag-api
   participant R as Redis
-  participant T as Cloud Tasks
-  participant W as API route internal
-  participant D as BigQuery dan Pinecone
+  participant Q as SQS
+  participant W as Lambda finrag-worker
+  participant D as MotherDuck dan Pinecone
   participant L as LLM gateway
 
   U->>A: POST /chat dengan JWT
   A->>R: HSET job, RPUSH job.queued
-  A->>T: create task bernama job_id
+  A->>Q: send_message job_id
   A-->>U: 202 job_id
-  T->>W: POST /internal/jobs/job_id/run dengan OIDC
+  Q->>W: event source mapping (IAM)
+  W->>W: klaim job atomik di Postgres
   W->>R: job.started, guard.input.passed
   W->>L: Planner (plan.started)
   L-->>W: Plan JSON (plan.completed)
@@ -1254,7 +1347,7 @@ sequenceDiagram
   L-->>W: Recommendation JSON
   W->>W: output rail, rail cakupan
   W->>R: job.completed atau guard.scope.handoff
-  W->>A: simpan result ke Postgres
+  W->>W: simpan result ke Postgres, flush Langfuse dan Sentry
   loop setiap 2 detik
     U->>A: GET /jobs/job_id?after_seq=N
     A->>R: HGETALL, LRANGE
@@ -1272,11 +1365,12 @@ Tidak ada sign-up dan tidak ada registrasi di aplikasi. Satu-satunya pengguna ad
 | --- | --- | --- |
 | `anonymous` | Tanpa kredensial | Hanya `GET /health`. Pengunjung anonim tidak memanggil API sama sekali. Seluruh pengalaman demo ada di frontend (bagian 10.3) |
 | `owner` | JWT Clerk valid dan `clerk_user_id` ada di `app_user` dengan `role=owner` dan `is_active` | Semua route pengguna, `PUT /portfolio`, chat teks bebas, daily brief, `GET /handoffs` dan `POST /handoffs/{job_id}/resolve` |
-| `service_tasks` | Token OIDC Google dari Cloud Tasks. Aplikasi memverifikasi tanda tangan, audience sama dengan `SERVICE_URL`, dan email sama dengan `TASKS_INVOKER_SA` | Route `/internal/jobs/*` |
+
+Worker Lambda tidak punya endpoint HTTP. Ia dipicu SQS lewat IAM dan tidak diautentikasi di lapisan aplikasi.
 
 Verifikasi JWT Clerk: ambil JWKS dari domain Clerk, cek tanda tangan RS256, `exp`, `nbf`, dan `azp` terhadap `ALLOWED_ORIGINS`. Lanjut dengan lookup `app_user` berdasarkan `sub` (di-cache di memori 5 menit). Jika tidak ditemukan atau tidak aktif: 403. Lapisan ganda: sign-up Clerk dimatikan atau dibatasi (verifikasi apakah tersedia di paket gratis), UI tidak merender komponen atau tautan sign-up, dan API tetap menolak setiap `sub` yang tidak ada di `app_user`, sehingga akun asing yang lolos pendaftaran tidak dapat mengakses data.
 
-Karena layanan Cloud Run publik, route `/internal/*` tidak boleh bergantung pada IAM saja: aplikasi harus menolak setiap request tanpa token OIDC yang valid dengan 401.
+Tidak ada route internal. Seluruh pekerjaan job dijalankan worker yang dipicu SQS. Function URL `finrag-api` publik, jadi setiap route selain `/health` wajib menolak token yang tidak dipetakan ke `app_user`.
 
 ### 9.2 Daftar route
 
@@ -1292,7 +1386,7 @@ Semua route berada di satu layanan `finrag-api`. Kolom peran: `user` berarti `ow
 | GET | `/prices/live` | user | Fallback polling harga terakhir seluruh universe (cache Redis 15 detik). Dipakai bila websocket browser gagal |
 | GET | `/charts/{ticker}` | user | Seri harga dan indikator (`range`: 3m, 6m, 1y), cache Redis 5 menit |
 | GET | `/feed` | user | Item berita dan X terbaru dari `mart_feed` (`limit`, `ticker`), cache Redis 2 menit |
-| GET | `/signals` | user | Sinyal indikator per ticker (fungsi murni di `app/signals.py`), cache Redis 5 menit |
+| GET | `/signals` | user | Sinyal indikator per ticker (fungsi murni di `app/domain/market/signals.py`), cache Redis 5 menit |
 | GET | `/status/freshness` | user | Kesegaran data per sumber (dari `freshness:*`) |
 | POST | `/chat` | user | Buat job. Body: `question`, `session_id` opsional, `client_request_id`. Respons 202 |
 | POST | `/chat/daily-brief` | user | Tombol Rekomendasi Hari Ini. Body: `client_request_id`, `force` opsional. Respons 202, atau 200 bila hasil cache dikembalikan |
@@ -1302,15 +1396,13 @@ Semua route berada di satu layanan `finrag-api`. Kolom peran: `user` berarti `ow
 | GET | `/chat/sessions/{session_id}/messages` | user | Riwayat sesi (pertanyaan dan jawaban dari `chat_job`) |
 | GET | `/handoffs` | owner | Daftar job berstatus `handoff` yang belum ditutup |
 | POST | `/handoffs/{job_id}/resolve` | owner | Tutup handoff (isi `handoff_resolved_at`, event `handoff.resolved`) |
-| POST | `/internal/jobs/{job_id}/run` | service_tasks | Menjalankan pipeline untuk satu job (idempoten) |
 
 Matriks akses:
 
-| Grup route | anonymous | owner | service_tasks |
-| --- | --- | --- | --- |
-| `/health` | ya | ya | ya |
-| `/me`, `/universe`, `/portfolio`, `/prices/*`, `/charts/*`, `/feed`, `/signals`, `/status/*`, `/chat*`, `/jobs/*`, `/handoffs*` | tidak | ya | tidak |
-| `/internal/jobs/*` | tidak | tidak | ya |
+| Grup route | anonymous | owner |
+| --- | --- | --- |
+| `/health` | ya | ya |
+| `/me`, `/universe`, `/portfolio`, `/prices/*`, `/charts/*`, `/feed`, `/signals`, `/status/*`, `/chat*`, `/jobs/*`, `/handoffs*` | tidak | ya |
 
 Contoh badan permintaan dan respons:
 
@@ -1332,6 +1424,8 @@ Contoh badan permintaan dan respons:
 ```
 
 CORS: izinkan hanya origin Vercel (dan `http://localhost:3000` saat pengembangan). Terapkan rate limit chat lewat `rl:chat:*` (20 per jam).
+
+API memasang `GZipMiddleware` (`minimum_size=1000`) karena Function URL tidak mengompres respons. Respons chart dan feed selalu lewat cache Redis dan memakai kolom eksplisit dan `LIMIT`.
 
 ## 10. Frontend
 
@@ -1454,13 +1548,13 @@ Semua versi dikunci lewat `uv.lock` (Python) dan lockfile npm. Pelaksana memasan
 
 ### 11.1 Layanan `finrag-api` (dependensi dasar)
 
-`fastapi[standard]`, `pydantic`, `pydantic-settings`, `sqlalchemy[asyncio]`, `asyncpg`, `alembic`, `pyjwt[crypto]`, `httpx`, `upstash-redis`, `google-cloud-tasks`, `google-cloud-bigquery`, `google-auth`, `sentry-sdk[fastapi]`, `tenacity`, `langchain`, `langchain-core`, `langchain-openai`, `pinecone`, `sqlglot`, `langfuse`, `pyyaml`.
+`fastapi`, `pydantic`, `pydantic-settings`, `sqlalchemy[asyncio]`, `asyncpg`, `alembic`, `pyjwt[crypto]`, `httpx`, `upstash-redis`, `sentry-sdk[fastapi]`, `tenacity`, `langchain`, `langchain-core`, `langchain-openai`, `pinecone`, `sqlglot`, `langfuse`, `pyyaml`, `boto3` (SQS, SSM), `duckdb` (klien MotherDuck, versi dikunci sama dengan yang didukung MotherDuck), `mangum`.
 
-Tidak ada pandas dan tidak ada `google-cloud-storage` di layanan ini. EMA dan sinyal dihitung dengan fungsi Python murni.
+Tidak ada pandas dan tidak ada pyarrow di image ini. EMA dan sinyal dihitung dengan fungsi Python murni.
 
 ### 11.2 Flow Prefect (extra `flows`)
 
-`prefect`, `google-cloud-bigquery`, `google-cloud-storage`, `dbt-core`, `dbt-bigquery`, `pandas`, `pyarrow`, `firecrawl-py`, `feedparser`, `httpx`, `tenacity`, `pinecone`, `upstash-redis`, `pyyaml`.
+`prefect`, `dlt[filesystem,parquet]`, `dbt-core`, `dbt-duckdb`, `duckdb`, `pyarrow`, `firecrawl-py`, `feedparser`, `httpx`, `tenacity`, `pinecone`, `upstash-redis`, `pyyaml`.
 
 ### 11.3 Pengembangan dan pengujian
 
@@ -1472,13 +1566,13 @@ Tidak ada pandas dan tidak ada `google-cloud-storage` di layanan ini. EMA dan si
 
 ### 11.5 Perangkat CLI
 
-`uv`, `gcloud`, `terraform`, `vercel`, `prefect`, `dbt` (lewat extra `flows`), `node` dan `npm`, `git`.
+`uv`, `aws` (AWS CLI v2), `terraform`, `vercel`, `prefect`, `dbt` (lewat extra `flows`), `docker` (buildx), `node` dan `npm`, `git`.
 
 ### 11.6 Akun yang harus dibuat
 
-Clerk, Google Cloud (billing aktif), Neon, Upstash, Pinecone, Prefect Cloud, Firecrawl, Cloudflare (AI Gateway dan R2 untuk state Terraform), penyedia gateway LLM (OpenCode Go atau OpenRouter), Vercel, Sentry, Langfuse Cloud, region US, GitHub. Opsional: webhook Discord atau Telegram untuk handoff, kunci demo CoinGecko.
+Clerk, AWS (budget alert), MotherDuck (region us-east-1, dua service account), Neon, Upstash, Pinecone, Prefect Cloud, Firecrawl, Cloudflare (hanya AI Gateway), penyedia gateway LLM (OpenCode Go atau OpenRouter), Vercel, Sentry, Langfuse Cloud, region US, GitHub. Opsional: webhook Discord atau Telegram untuk handoff, kunci demo CoinGecko.
 
-Tidak lagi diperlukan dibanding v1: FastAPI Cloud, Together AI, Twelve Data.
+Tidak lagi diperlukan dibanding v1: FastAPI Cloud, Together AI, Twelve Data. Tidak lagi diperlukan dibanding v2.0.4: Google Cloud, Cloudflare R2.
 
 ### 11.7 Variabel lingkungan
 
@@ -1486,10 +1580,14 @@ Tidak lagi diperlukan dibanding v1: FastAPI Cloud, Together AI, Twelve Data.
 | --- | --- |
 | `CLERK_JWKS_URL`, `CLERK_ISSUER`, `ALLOWED_ORIGINS` | api |
 | `DATABASE_URL` | api |
+| `SSM_PATH` (`/finrag/prod/`), dimuat saat cold start ke lingkungan proses | api, worker |
+| `SQS_QUEUE_URL` | api |
+| `LANDING_BUCKET` | flows |
+| `MD_DATABASE` (`finrag`), `MD_MONTHLY_SECONDS_CAP` | api, worker, flows |
+| `MOTHERDUCK_TOKEN_RO` | api, worker |
+| `MOTHERDUCK_TOKEN_RW` | flows (Prefect Secret block) |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (kunci `finrag-prefect-writer`) | flows (Prefect Secret block). Tidak diset di Lambda (role) |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | api, flows |
-| `GCP_PROJECT_ID`, `GCP_REGION`, `BQ_DATASET_RAW`, `BQ_DATASET_STG`, `BQ_DATASET_MART` | api, flows |
-| `GCP_SA_KEY_B64` | flows (Prefect Secret block). Tidak dipakai di Cloud Run |
-| `CLOUD_TASKS_QUEUE`, `SERVICE_URL`, `TASKS_INVOKER_SA` | api |
 | `LLM_BASE_URL` (URL Cloudflare AI Gateway), `CF_AIG_TOKEN`, `LLM_API_KEY` (kosong bila kunci disimpan di Cloudflare), `PLANNER_MODEL`, `FINAL_MODEL`, `FALLBACK_MODEL`, `DAILY_LLM_BUDGET_USD` | api |
 | `PINECONE_API_KEY`, `PINECONE_INDEX`, `EMBEDDING_MODEL` (`multilingual-e5-large`), `EMBEDDING_DIM` (1024) | api, flows |
 | `PINECONE_MAX_VECTORS`, `EMBED_MONTHLY_TOKEN_CAP` | flows (dan api untuk baca counter) |
@@ -1501,6 +1599,8 @@ Tidak lagi diperlukan dibanding v1: FastAPI Cloud, Together AI, Twelve Data.
 | `HANDOFF_WEBHOOK_URL` (opsional) | api |
 | `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `NEXT_PUBLIC_CONTACT_URL`, `CLERK_SECRET_KEY` | web |
 
+Rahasia Lambda ada di SSM, rahasia flows di Prefect Secret block, tidak ada di env fungsi. `AWS_REGION` diisi otomatis oleh Lambda, jangan dideklarasikan.
+
 Model embedding: `multilingual-e5-large` lewat Pinecone Inference (dimensi 1024). Buat indeks Pinecone dengan dimensi yang sama. Mengganti model berarti membangun ulang indeks. Tidak ada fallback embedding gratis: bila kuota embedding habis, embedding chunk baru dilewati dan pencarian tetap berjalan.
 
 ## 12. Struktur Repositori
@@ -1509,42 +1609,56 @@ Model embedding: `multilingual-e5-large` lewat Pinecone Inference (dimensi 1024)
 finrag/
   pyproject.toml            # dependensi dasar (api), extras: flows, dev
   uv.lock
-  Dockerfile                # image finrag-api untuk Cloud Run
-  prefect.yaml              # empat deployment dan work pool
+  Dockerfile                # image finrag-api (api dan worker), base public.ecr.aws/lambda/python:3.12
+  prefect.yaml              # tiga deployment, work pool finrag-managed, git_clone, pip_packages
   README.md                 # keputusan, hasil uji X dan Binance, hasil verifikasi kuota, cara deploy
   config/
     universe.yaml           # 10 koin (bagian 4.4)
   scripts/
     seed_user.py            # isi app_user manual (owner)
+    init_motherduck.py      # buat database, skema raw/stg/mart, tabel raw, secret S3 persisten
   app/
+    lambda_api.py           # handler Mangum
+    lambda_worker.py        # handler SQS, klaim job atomik
     main.py                 # FastAPI (app.main:app)
     settings.py
-    auth/                   # verifikasi Clerk, lookup app_user, peran, OIDC
-    routes/                 # portfolio, prices, charts, feed, signals, chat, jobs, handoffs, status, internal
+    clock.py                # waktu UTC sebagai string ISO
+    infra/                  # klien eksternal, tanpa logika domain
+      redis.py              # Upstash Redis, helper JSON, event sistem, freshness, flow lock (bagian 8)
+      motherduck.py         # koneksi MotherDuck, sqlglot SQL guard, penghitung detik
+      postgres.py           # engine Neon dan sessionmaker
+      sqs.py                # kirim job ke SQS
+      clerk_jwks.py         # verifikasi JWT Clerk (JWKS)
+      retry.py              # tenacity untuk error sementara
+    auth/                   # dependensi FastAPI: lookup app_user, peran (tanpa OIDC)
     db/                     # model SQLAlchemy dan Alembic
-    redis_keys.py           # nama kunci dan event (bagian 8)
-    indicators.py           # EMA dan helper indikator murni
-    signals.py              # sinyal indikator deskriptif
-    sources/                # PriceSource (Binance, CoinGecko), akses harga terakhir
+    domain/
+      chat/                 # jobs_service.py, redis_keys.py (job, idempotensi, rate limit, biaya LLM)
+      market/               # indicators.py (EMA dan helper murni), signals.py, universe.py, redis_keys.py (harga, grafik, feed, ingest), sources/prices.py
+      portfolio/            # schemas.py
+      guardrails/           # rails.py (bagian 6.4), disclosures.py (bagian 6.6)
+    routes/                 # tipis: portfolio, prices, charts, feed, signals, chat, jobs, handoffs, status (tanpa internal)
     agent/
       pipeline.py           # run_chat_job
       planner.py
+      llm.py                # klien LLM lewat Cloudflare AI Gateway
       tools.py              # get_indicators, get_last_prices, get_price_history, get_portfolio, run_readonly_sql
       retrieval.py          # Pinecone, rerank
       context.py
-      prompts.py            # template bagian 6.2
+      prompts.py            # ChatPromptTemplate bagian 6.2, dibangun dari prompt_store
+      prompt_store.py       # muat config/prompts.yaml (default prompt, titik override Langfuse)
       schemas.py            # Plan dan Recommendation
-    guardrails/
-      rails.py              # bagian 6.4
-      disclosures.py        # bagian 6.6
   flows/
-    ingest_prices.py
-    ingest_news.py
+    ingest_daily.py
     scrape_x_next_ticker.py
     build_and_embed.py
+    dlt_sources/            # resource dlt: binance, coingecko, rss, x
     sources/                # PriceSource, TextSource
   dbt/
     dbt_project.yml
+    profiles.yml            # adapter duckdb, path md:finrag
+    ddl/raw.sql             # CREATE TABLE IF NOT EXISTS raw.*
+    macros/generate_schema_name.sql
     models/staging/
     models/marts/
     tests/
@@ -1567,19 +1681,21 @@ finrag/
     questions.jsonl         # 20 pertanyaan retrieval, 5 permintaan eksekusi, 5 uji cakupan
     run_eval.py
   infra/
-    terraform/              # infrastruktur GCP sebagai kode
-      backend.tf            # state di Cloudflare R2 (isian diisi nanti)
-      versions.tf           # versi Terraform dan provider Google
-      providers.tf          # provider Google
-      variables.tf          # project_id, region, prefix, image
-      main.tf               # pemanggilan semua modul
+    terraform/
+      backend.tf            # state di S3 (use_lockfile = true)
+      versions.tf           # Terraform dan provider AWS
+      providers.tf          # provider AWS, region us-east-1
+      variables.tf          # region, prefix, image_tag
+      main.tf
       outputs.tf
       modules/
-        worker/             # Cloud Run finrag-api (worker = route /internal/jobs/{job_id}/run)
-        iam/                # sa-app, sa-tasks-invoker, sa-flows (bagian 3.4)
-        bigquery/           # dataset finrag_raw, finrag_stg, finrag_mart
-        storage/            # bucket landing
-        tasks/              # queue chat-jobs
+        storage/            # bucket landing (blokir publik, SSE-S3, TLS-only, lifecycle)
+        queue/              # SQS chat-jobs dan DLQ
+        iam/                # role api dan worker, IAM user prefect-writer dan md-reader (bagian 3.4)
+        ecr/                # repositori finrag-api, lifecycle 3 image
+        api/                # Lambda finrag-api, Function URL, izin invoke, log group
+        worker/             # Lambda finrag-worker, event source mapping
+        ssm/                # parameter SecureString (nilai diisi manual, ignore_changes)
 ```
 
 ## 13. Rencana Build 48 Jam
@@ -1588,14 +1704,14 @@ Urutan mengikuti ketergantungan. Setiap blok memiliki kriteria selesai. Garis po
 
 | Jam | Tujuan | Tugas | Selesai bila |
 | --- | --- | --- | --- |
-| 0 sampai 2 | Fondasi | Buat semua akun. GCP: billing, budget alert, dataset, bucket, queue, akun layanan. Neon, Upstash, Pinecone (indeks 1024 cosine). Konfigurasi Clerk (sign-up dimatikan bila bisa). Deploy hello-world ke Cloud Run. Buat Cloudflare AI Gateway, tambahkan OpenCode Go sebagai custom provider, aktifkan autentikasi gateway, lalu uji satu panggilan planner dari Cloud Run. Catat format URL dan nama model di README. **Uji Firecrawl terhadap pencarian X. Uji Binance dari Cloud Run dan Prefect. Uji RSS berita. Verifikasi kuota yang belum terverifikasi (bagian 1.1)** | URL hello aktif. Hasil semua uji tercatat di README |
-| 2 sampai 6 | Auth dan portofolio | Skema Postgres dan Alembic (4 tabel). Verifikasi Clerk, lookup `app_user`, `seed_user`. Route `/me`, `/universe`, `/portfolio`. Deploy | `PUT /portfolio` menyimpan holdings. Token orang asing ditolak 403. Pemilik terdaftar bisa masuk |
-| 6 sampai 12 | Data harga | `ingest_prices` (Binance dan fallback CoinGecko), landing, load ke `raw_ohlcv`. dbt: `stg_ohlcv`, `mart_ohlcv_1d`, `mart_indicators`. Route `/charts/*`, `/signals`, `/prices/live`, `/status/freshness` | Chart satu koin menampilkan harga dan indikator dari BigQuery |
-| 12 sampai 18 | Teks dan vektor | `ingest_news`, `scrape_x_next_ticker` dengan token bucket dan anggaran, `mart_text_chunks`, `mart_feed`, embedding Pinecone Inference, upsert Pinecone dengan penjaga kuota. Route `/feed` | Query "BTC minggu ini" mengembalikan chunk yang relevan |
-| 18 sampai 26 | Agent | Kunci dan event Redis. Planner, plan tetap daily brief, tools, SQL guard, empat rail, handoff, prompt, structured output, disclosures. Route internal dan Cloud Tasks. `/chat`, `/chat/daily-brief`, `/jobs/*`, `/handoffs*` | Job chat selesai dengan sitasi dan pengungkapan. SQL tidak sah ditolak. Angka tak terlandasi ditolak. Pertanyaan di luar skrip menjadi `handoff` |
+| 0 sampai 2 | Fondasi | Buat semua akun. MotherDuck dibuat PERTAMA dan di us-east-1 (tidak dapat diubah setelahnya). AWS: MFA root, budget alert, bucket state, apply Terraform untuk S3, SQS, IAM, ECR, SSM. Neon (aws-us-east-1), Upstash (us-east-1), Pinecone (indeks 1024 cosine). Prefect Cloud dan work pool. Konfigurasi Clerk (sign-up dimatikan bila bisa). Push image hello-world dan deploy Lambda api dengan Function URL. Buat Cloudflare AI Gateway, tambahkan OpenCode Go sebagai custom provider, aktifkan autentikasi gateway, lalu uji satu panggilan planner dari Lambda. Catat format URL dan nama model di README. **Uji Firecrawl terhadap pencarian X. Uji Binance dari Prefect Serverless dan Lambda. Uji RSS berita. Uji dlt menulis Parquet ke S3 dari Prefect Serverless (tata letak berkas, state), uji pip_packages dan git_clone, ukur menit satu flow hello. Uji MotherDuck membaca S3 privat (secret), ekstensi motherduck dari Lambda, dan akses baca-saja token RO. Verifikasi kuota yang belum terverifikasi (bagian 1.1).** | URL hello aktif. Hasil semua uji tercatat di README |
+| 2 sampai 6 | Auth dan portofolio | Skema Postgres dan Alembic (4 tabel). Verifikasi Clerk, lookup `app_user`, `seed_user`, koneksi Neon dengan NullPool. Route `/me`, `/universe`, `/portfolio`. Deploy | `PUT /portfolio` menyimpan holdings. Token orang asing ditolak 403. Pemilik terdaftar bisa masuk |
+| 6 sampai 12 | Data harga | `ingest_daily` (dlt: Binance dan fallback CoinGecko, RSS), muat ke raw dari S3. dbt-duckdb: `stg_ohlcv`, `mart_ohlcv_1d`, `mart_indicators`. Route `/charts/*`, `/signals`, `/prices/live`, `/status/freshness` | Chart satu koin menampilkan harga dan indikator dari MotherDuck |
+| 12 sampai 18 | Teks dan vektor | bagian berita di `ingest_daily`, `scrape_x_next_ticker` (dlt) dengan token bucket dan anggaran, `mart_text_chunks`, `mart_feed`, embedding Pinecone Inference, upsert Pinecone dengan penjaga kuota. Route `/feed` | Query "BTC minggu ini" mengembalikan chunk yang relevan |
+| 18 sampai 26 | Agent | Kunci dan event Redis. Planner, plan tetap daily brief, tools, SQL guard, empat rail, handoff, prompt, structured output, disclosures. Handler worker SQS dengan klaim atomik, DLQ. `/chat`, `/chat/daily-brief`, `/jobs/*`, `/handoffs*` | Job chat selesai dengan sitasi dan pengungkapan. SQL tidak sah ditolak (SQL guard DuckDB bagian 5.2, cakup fungsi tabel dan path). Angka tak terlandasi ditolak. Pertanyaan di luar skrip menjadi `handoff` |
 | 26 sampai 34 | Frontend | Next.js: dashboard langsung di `/`, tiga mode (empty, demo, owner) lewat data source adapter, fixture demo dan skrip chat prarekam, dialog login Clerk, websocket live dengan fallback (owner), feed, sinyal, bar chat, tombol Rekomendasi Hari Ini, pengungkapan. Deploy Vercel. CORS | Berjalan dari browser ponsel |
 | 34 sampai 40 | Uji menyeluruh | Jalankan 20 pertanyaan evaluasi. Ukur dampak decay (aktif lawan nonaktif). Uji 5 permintaan eksekusi (harus ditolak) dan 5 uji cakupan (harus `handoff`). Kalibrasi `MIN_SIMILARITY` | Skor evaluasi tercatat. Tidak ada penolakan atau handoff yang bocor |
-| 40 sampai 44 | Penguatan | Sentry, Langfuse, batas biaya LLM, penjaga free tier, rate limit, alert freshness, README. Uji fallback di gateway dengan menonaktifkan penyedia utama sementara. | Kesalahan terlihat di Sentry. Trace muncul di Langfuse. Penjaga kuota teruji |
+| 40 sampai 44 | Penguatan | Sentry, Langfuse, batas biaya LLM, penjaga free tier, rate limit, alert freshness, README. Uji fallback di gateway dengan menonaktifkan penyedia utama sementara. Ukur egress di Cost Explorer (NF-5) dan menit Prefect. | Kesalahan terlihat di Sentry. Trace muncul di Langfuse. Penjaga kuota teruji. Uji penjaga compute MotherDuck |
 | 44 sampai 48 | Demo | Skrip demo (buka `/?demo=1`, template portofolio, uji guardrail, lalu login owner), deploy bersih dari repositori, cadangan tangkapan layar. `--min-instances 1` selama demo. Bekukan kode pada jam 46 | Demo berjalan dari awal tanpa intervensi manual |
 
 Garis potong bila waktu habis, urutan dari yang dipotong pertama: Langfuse, uji dbt tambahan, evaluasi decay, skrip chat demo prarekam (demo hanya portofolio, feed, dan sinyal dummy), panel sinyal (kanan hanya kesegaran data), EMA, sumber X (turun ke berita saja dengan `TextSource`), grafik per ticker. Tidak boleh dipotong: autentikasi (hanya pengguna di `app_user`), empat rail, pengungkapan AI dan pernyataan tanggung jawab, sitasi, batas biaya dan penjaga free tier.
@@ -1611,10 +1727,11 @@ Realisme: lingkup ini padat untuk satu orang dalam 48 jam. Jika tertinggal lebih
 | FR-3 | Tombol Rekomendasi Hari Ini | Satu klik menghasilkan penilaian harian dengan sitasi. Klik berikutnya pada hari yang sama dengan holdings sama mengembalikan hasil cache |
 | FR-4 | Halaman awal langsung dashboard dengan portofolio kosong, tombol Gunakan Demo Mode, tombol Masuk (hanya pemilik), dan "Contact owner for further demo". Demo mode murni sisi klien | Tidak ada sign-up. Pengunjung anonim tidak memicu satu pun request ke API. Demo tidak memuat data nyata. Login pemilik membuang state demo |
 | PL-1 | Scrape X untuk cashtag dan handle per koin | Satu request per 15 menit, tidak pernah terlampaui. Rerun tidak membuat duplikat. Batas 10 ticker. Anggaran kredit Firecrawl dihormati |
-| NF-1 | Keamanan | Hanya pengguna di `app_user` yang dapat mengakses data. Tidak ada rahasia di klien atau repositori. Route internal menolak request tanpa OIDC |
+| NF-1 | Keamanan | Hanya pengguna di `app_user` yang dapat mengakses data. Tidak ada rahasia di klien atau repositori. Worker tidak punya ingress HTTP (hanya SQS lewat IAM) dan tidak ada route internal. Token baca-saja MotherDuck dipakai oleh API dan worker |
 | NF-2 | Keandalan jawaban | Angka di jawaban selalu ada di konteks. Bukti kurang menghasilkan "insufficient data" |
 | NF-3 | Kepatuhan dan tanggung jawab | Pengungkapan AI terlihat sebelum pesan pertama dan pada setiap respons. Pernyataan tanggung jawab finansial menyertai setiap hasil. Saran tak diminta, janji, dan pernyataan di luar skrip menghasilkan `handoff` |
-| NF-4 | Free tier | Penjaga Pinecone, token embedding, kredit Firecrawl, dan biaya LLM aktif dan teruji |
+| NF-4 | Free tier | Penjaga Pinecone, token embedding, kredit Firecrawl, biaya LLM, compute MotherDuck (`MD_MONTHLY_SECONDS_CAP`), menit Prefect (alert 80 persen), dan budget alert AWS aktif dan teruji |
+| NF-5 | Egress | Setelah 24 jam, Cost Explorer (filter usage type `DataTransfer-Out-Bytes`) menunjukkan kurang dari 0.1 GB per hari dan biaya `NatGateway` nol. Tidak ada NAT Gateway, Lambda di VPC, atau interface endpoint. Bucket, Lambda, SQS, dan MotherDuck berada di us-east-1 |
 
 ### 13.2 Evaluasi
 
@@ -1623,19 +1740,23 @@ Realisme: lingkup ini padat untuk satu orang dalam 48 jam. Jika tertinggal lebih
 ## 14. Aturan untuk AI Pelaksana
 
 1. Jangan mengubah arsitektur atau pilihan layanan pada bagian 1. Semua layanan berstatus managed dan memakai tier gratis kecuali LLM dan Firecrawl setelah kredit habis. Jika sebuah layanan gagal, gunakan fallback yang sudah tertulis di dokumen ini, bukan layanan baru.
-2. Jangan mengganti Prefect, Upstash, Pinecone, Firecrawl, atau X. X tetap masuk. Bila uji jam pertama gagal, aktifkan interface `TextSource` dan catat di README.
+2. Jangan mengganti Prefect, dlt, S3, MotherDuck, SQS dan Lambda, Upstash, Pinecone, Firecrawl, atau X. X tetap masuk. Bila uji jam pertama gagal, aktifkan interface `TextSource` dan catat di README.
 3. Embedding hanya lewat Pinecone Inference. Jangan menambah penyedia embedding berbayar.
 4. Verifikasi kuota gratis (daftar belum terverifikasi di bagian 1.1) sebelum bergantung padanya. Catat hasilnya di README.
-5. Jangan menaruh rahasia di repositori atau klien. Gunakan env Cloud Run (berkas `.env.prod.yaml` tidak di-commit), Prefect Secret block, dan env Vercel.
+5. Jangan menaruh rahasia di repositori atau klien. Gunakan SSM Parameter Store (SecureString) untuk Lambda, Prefect Secret block untuk flows, env Vercel, dan berkas `.env` lokal yang tidak di-commit.
 6. Tidak ada eksekusi transaksi dan tidak ada kode yang terhubung ke broker atau bursa selain pembacaan data publik.
 7. Tidak ada sign-up, tidak ada registrasi, tidak ada pembuatan pengguna otomatis. Pengguna hanya masuk lewat baris `app_user` yang diisi manual. Demo mode wajib murni sisi klien lewat `DemoDataSource`: tidak memanggil API dan tidak memuat data nyata.
 8. Setiap hasil terminal memuat pengungkapan AI dan pernyataan tanggung jawab finansial yang ditulis server dari `disclosures.py`. Model tidak boleh menulisnya.
 9. Rail cakupan wajib berjalan sebelum hasil dikirim. Pelanggaran menghasilkan `handoff`, bukan perbaikan otomatis.
 10. Pasang pengaman SQL bagian 5.2 sebelum membuka tool SQL ke LLM.
 11. Pasang penjaga free tier (Pinecone, token embedding, kredit Firecrawl, biaya LLM) sebelum menjadwalkan flow apa pun.
-12. Rerun harus idempoten: path landing deterministik, dedupe di staging, route internal memeriksa status job.
+12. Rerun harus idempoten: worker mengklaim job secara atomik, dlt memakai state incremental, staging membuang duplikat.
 13. Ikuti urutan jam di bagian 13 dan terapkan garis potong tanpa menunggu persetujuan.
-14. Semua panggilan LLM wajib lewat Cloudflare AI Gateway. Jangan memanggil OpenCode Go atau OpenRouter langsung dari aplikasi. Kunci penyedia tidak boleh ada di repositori, klien, atau env Cloud Run bila Cloudflare mendukung penyimpanannya.
+14. Semua panggilan LLM wajib lewat Cloudflare AI Gateway. Jangan memanggil OpenCode Go atau OpenRouter langsung dari aplikasi. Kunci penyedia tidak boleh ada di repositori, klien, atau env fungsi bila Cloudflare mendukung penyimpanannya.
+15. Terapkan aturan egress E1 sampai E8. Dilarang menambah NAT Gateway, Lambda di VPC, interface VPC endpoint, atau sumber daya lintas region. Data mentah dimuat ke MotherDuck dari S3 langsung.
+16. Panggil `langfuse.flush()` dan `sentry_sdk.flush()` sebelum handler Lambda kembali.
+17. Semua query dari aplikasi ke MotherDuck memakai token baca-saja dan lolos SQL guard 5.2. Token baca-tulis hanya untuk flow Prefect.
+18. Ingest hanya lewat dlt. Dilarang menulis path S3 atau kode landing buatan sendiri. Pantau menit Prefect dan terapkan tuas 4.5 sebelum kuota habis.
 
 ## 15. Risiko
 
@@ -1643,14 +1764,11 @@ Realisme: lingkup ini padat untuk satu orang dalam 48 jam. Jika tertinggal lebih
 | --- | --- | --- |
 | Firecrawl tidak dapat mengambil X | PL-1 tidak terpenuhi | Uji jam pertama, `TextSource`, berita sebagai sumber utama |
 | Kredit gratis Firecrawl hanya 500 sekali pakai | X berhenti setelah sekitar 5 minggu | `FIRECRAWL_CREDIT_BUDGET`, event `ingest.x.skipped_budget`, turun ke berita saja, atau paket berbayar |
-| Binance menolak IP Cloud Run atau Prefect (451) | Harga kosong atau live tertunda | `BINANCE_BASE_URL` alternatif, fallback CoinGecko, websocket browser untuk harga live |
+| Binance menolak IP Lambda atau Prefect Serverless (451) | Harga kosong atau live tertunda | `BINANCE_BASE_URL` alternatif, fallback CoinGecko, websocket browser untuk harga live |
 | Kuota Upstash (500 ribu command per bulan) | Redis berhenti merespons | Polling adaptif, cache TTL, alert 80 persen |
 | Index Pinecone Starter dijeda bila tidak aktif | Pencarian gagal | Flow terjadwal menyentuh indeks setiap hari |
 | Kuota embedding atau vektor Pinecone terlampaui | Chunk baru tidak masuk indeks | Penjaga `EMBED_MONTHLY_TOKEN_CAP` dan `PINECONE_MAX_VECTORS`, event kuota |
 | Skor cosine e5 rapat | Retrieval rail terlalu longgar atau terlalu ketat | Kalibrasi `MIN_SIMILARITY` dari evaluasi |
-| Cold start Cloud Run | Respons pertama lambat | `--cpu-boost`, impor lazy, `--min-instances 1` saat demo |
-| Layanan publik dengan route internal | Pemanggilan route internal oleh pihak luar | Verifikasi OIDC di aplikasi, idempotensi job |
-| Sandbox BigQuery tanpa DML | dbt incremental gagal | Billing aktif, free usage tier tetap berlaku, budget alert |
 | Clerk tidak dapat membatasi sign-up di paket gratis | Akun asing dapat mendaftar | API menolak `sub` yang tidak ada di `app_user`, UI tanpa sign-up |
 | Halusinasi angka | Jawaban menyesatkan | Output rail, sitasi di setiap klaim, status `insufficient` |
 | Rail cakupan berbasis regex menghasilkan false positive atau false negative | Handoff berlebihan atau saran lolos | Evaluasi bagian 13.2, perbarui pola sebelum bekukan kode |
@@ -1661,3 +1779,17 @@ Realisme: lingkup ini padat untuk satu orang dalam 48 jam. Jika tertinggal lebih
 | Bundel klien memuat data atau rahasia nyata | Kebocoran data | Fixture hanya sintetis, tinjau `web/lib/demo/` sebelum deploy |
 | Cloudflare AI Gateway tidak mendukung custom provider seperti yang diasumsikan | Jalur LLM tidak berfungsi | Uji jam pertama. Cadangan: panggil OpenCode Go atau OpenRouter langsung dengan mengganti `LLM_BASE_URL`, tanpa perubahan kode lain |
 | Gateway menjadi titik kegagalan tunggal bagi LLM | Semua job gagal bila gateway turun | Pengaman `.with_fallbacks()` di aplikasi dan `LLM_BASE_URL` dapat dialihkan ke penyedia langsung |
+| Menit Prefect Serverless (500) habis | Flow berhenti, data tidak segar | Jadwal dipangkas (4.5), ukur di 24 jam pertama, alert 80 persen, tuas terurut |
+| dlt filesystem: tata letak berkas atau state tidak sesuai dugaan | Muat ke MotherDuck salah atau mengulang | Uji di jam pertama, state di bucket, dedupe di staging |
+| dlt memecah data bersarang menjadi tabel anak | Skema raw tidak sesuai | `max_table_nesting=0`, kolom daftar disimpan sebagai JSON |
+| Akun AWS baru memakai paket gratis berbatas waktu | Layanan berhenti atau tertagih setelah kredit habis | Catat tanggal berakhir kredit di README, budget alert |
+| Compute MotherDuck 10 jam per bulan habis | Query dashboard dan chat gagal | `MD_MONTHLY_SECONDS_CAP`, cache Redis, API melayani cache lama |
+| Region MotherDuck bukan us-east-1 | Egress dan latensi lintas region | Buat akun di us-east-1 sejak awal |
+| MotherDuck tidak dapat membaca S3 privat memakai kunci yang ada | Aturan E2 tidak terpenuhi | Fallback bagian 4.2 |
+| Versi DuckDB klien tidak cocok dengan MotherDuck | Koneksi gagal | Kunci versi `duckdb` yang didukung, pasang ekstensi saat build image |
+| SQL bebas dapat membaca berkas atau URL lewat DuckDB | Kebocoran atau SSRF | Allowlist tabel, tolak fungsi tabel dan path, token baca-saja (bagian 5.2) |
+| Function URL publik dibanjiri request | Kuota Lambda habis | `reserved_concurrent_executions`, budget alert, verifikasi JWT sebelum kerja berat |
+| Lambda membeku sebelum Sentry dan Langfuse terkirim | Trace dan error hilang | `flush` di akhir handler |
+| Kuota konkurensi Lambda akun baru rendah | Worker dan API saling menghambat | Verifikasi kuota, `maximum_concurrency` 3 |
+| Dua kunci statis (`finrag-prefect-writer`, `finrag-md-reader`) bocor | Tulis atau baca landing oleh pihak lain | Hak minimal pada satu bucket, rotasi per kuartal, tidak ada data rahasia di landing |
+| NAT Gateway atau VPC endpoint tidak sengaja dibuat | Biaya per jam dan per GB | Aturan E3, cek NF-5 di Cost Explorer |

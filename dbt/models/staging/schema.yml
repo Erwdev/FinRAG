@@ -1,0 +1,21 @@
+version: 2
+
+models:
+  - name: stg_ohlcv
+    columns:
+      - name: ticker
+        tests: [not_null]
+      - name: ts
+        tests: [not_null]
+      - name: close
+        tests: [not_null]
+
+  - name: stg_articles
+    columns:
+      - name: article_id
+        tests: [unique, not_null]
+
+  - name: stg_tweets
+    columns:
+      - name: tweet_id
+        tests: [unique, not_null]

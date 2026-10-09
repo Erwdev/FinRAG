@@ -1,0 +1,10 @@
+# Profil dbt-duckdb ke MotherDuck (Architecture.md 4.3). Hanya dipakai flow build_and_embed.
+# Token dibaca dari env MOTHERDUCK_TOKEN. Flow mengisinya dari MOTHERDUCK_TOKEN_RW (Prefect Secret block).
+# Tidak ada rahasia di berkas ini.
+finrag:
+  target: prod
+  outputs:
+    prod:
+      type: duckdb
+      path: "md:finrag"
+      threads: 1

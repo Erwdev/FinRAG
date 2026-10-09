@@ -1,0 +1,62 @@
+# Universe tetap 10 koin (Architecture.md 4.4). Satu-satunya sumber daftar aset.
+# Ingest selalu memproses seluruh daftar. PUT /portfolio hanya menerima symbol dari sini.
+- symbol: BTC
+  name: Bitcoin
+  binance: BTCUSDT
+  coingecko: bitcoin
+  x_query: "$BTC OR @Bitcoin"
+  news_aliases: ["bitcoin", "btc"]
+- symbol: ETH
+  name: Ethereum
+  binance: ETHUSDT
+  coingecko: ethereum
+  x_query: "$ETH OR @ethereum"
+  news_aliases: ["ethereum", "ether", "eth"]
+- symbol: SOL
+  name: Solana
+  binance: SOLUSDT
+  coingecko: solana
+  x_query: "$SOL OR @solana"
+  news_aliases: ["solana", "sol"]
+- symbol: BNB
+  name: BNB
+  binance: BNBUSDT
+  coingecko: binancecoin
+  x_query: "$BNB OR @BNBCHAIN"
+  news_aliases: ["bnb", "bnb chain"]
+- symbol: XRP
+  name: XRP
+  binance: XRPUSDT
+  coingecko: ripple
+  x_query: "$XRP OR @Ripple"
+  news_aliases: ["xrp", "ripple"]
+- symbol: ADA
+  name: Cardano
+  binance: ADAUSDT
+  coingecko: cardano
+  x_query: "$ADA OR @Cardano"
+  news_aliases: ["cardano", "ada"]
+- symbol: DOGE
+  name: Dogecoin
+  binance: DOGEUSDT
+  coingecko: dogecoin
+  x_query: "$DOGE OR @dogecoin"
+  news_aliases: ["dogecoin", "doge"]
+- symbol: LINK
+  name: Chainlink
+  binance: LINKUSDT
+  coingecko: chainlink
+  x_query: "$LINK OR @chainlink"
+  news_aliases: ["chainlink", "link"]
+- symbol: AVAX
+  name: Avalanche
+  binance: AVAXUSDT
+  coingecko: avalanche-2
+  x_query: "$AVAX OR @avax"
+  news_aliases: ["avalanche", "avax"]
+- symbol: DOT
+  name: Polkadot
+  binance: DOTUSDT
+  coingecko: polkadot
+  x_query: "$DOT OR @Polkadot"
+  news_aliases: ["polkadot", "dot"]
