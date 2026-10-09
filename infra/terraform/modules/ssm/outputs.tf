@@ -1,3 +1,7 @@
 output "parameter_arns" {
-  value = [for p in aws_ssm_parameter.secret : p.arn]
+  value = []
+}
+
+output "parameter_names" {
+  value = [for name in var.names : "${var.path}${name}"]
 }

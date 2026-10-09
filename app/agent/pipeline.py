@@ -27,13 +27,15 @@ from app.cache import utc_now_iso
 from app.db.models import ChatJob, Holding
 from app.guardrails.disclosures import get_disclosures
 from app.guardrails.rails import input_rail, output_rail, scope_rail
-from app.md import MdCapExceeded, MdUnavailable
+from app.md import MdCapExceeded
 from app.redis_keys import cost_llm, job, job_cancel, job_events
 from app.settings import get_settings
 from app.universe import universe_symbols
 
 DAILY_BRIEF_WINDOW_DAYS = 2
 MICRO_USD = 1_000_000
+INPUT_MICRO_USD_PER_1K_TOKENS = 150
+OUTPUT_MICRO_USD_PER_1K_TOKENS = 600
 
 # Progres per event (8.2). Status setelahnya diisi eksplisit di setiap pemanggilan _emit.
 PROGRESS = {
@@ -96,6 +98,27 @@ def _budget_exceeded(rd) -> bool:
     return spent >= get_settings().daily_llm_budget_usd * MICRO_USD
 
 
+def _llm_cost_micro_usd(usage: dict | None) -> int:
+    if not usage:
+        return 0
+    prompt_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
+    completion_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+    if prompt_tokens <= 0 and completion_tokens <= 0:
+        return 0
+    micro = (
+        prompt_tokens * INPUT_MICRO_USD_PER_1K_TOKENS
+        + completion_tokens * OUTPUT_MICRO_USD_PER_1K_TOKENS
+    ) / 1000
+    return max(1, int(round(micro)))
+
+
+def _record_llm_cost(rd, usage: dict | None) -> None:
+    micro = _llm_cost_micro_usd(usage)
+    if micro <= 0:
+        return
+    rd.incrby(cost_llm(dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d")), micro)
+
+
 async def _holdings(session: AsyncSession, user_id: uuid.UUID) -> list[dict]:
     rows = (await session.execute(select(Holding).where(Holding.user_id == user_id))).scalars().all()
     return [{"ticker": h.ticker, "quantity": h.quantity, "avg_cost": h.avg_cost} for h in rows]
@@ -120,12 +143,8 @@ async def run_chat_job(session: AsyncSession, rd, job_id: uuid.UUID) -> None:
         await _pipeline(run)
     except MdCapExceeded:
         await run.finish("failed", "job.failed", "batas compute MotherDuck tercapai", error_code="md_cap")
-    except MdUnavailable:
-        await run.finish("failed", "job.failed", "MotherDuck tidak tersedia", error_code="md_unavailable")
     except LlmNotConfigured:
         await run.finish("failed", "job.failed", "LLM belum dikonfigurasi", error_code="llm_not_configured")
-    except Exception:  # noqa: BLE001 - job ditandai gagal, bukan diulang tanpa henti
-        await run.finish("failed", "job.failed", "kesalahan internal", error_code="internal")
     finally:
         row.latency_ms = row.latency_ms or int((time.monotonic() - run.started) * 1000)
         await session.commit()
@@ -136,9 +155,15 @@ async def _pipeline(run: _Run) -> None:
     s = get_settings()
     now = dt.datetime.now(dt.timezone.utc)
 
+    async def _cancelled_boundary() -> bool:
+        if run.cancelled():
+            await run.finish("cancelled", "job.cancelled", "dibatalkan")
+            return True
+        return False
+
     await run.emit("job.started", "running", "job dimulai", progress=10)
-    if run.cancelled():
-        return await run.finish("cancelled", "job.cancelled", "dibatalkan")
+    if await _cancelled_boundary():
+        return
     if _budget_exceeded(rd):
         return await run.finish("failed", "job.failed", "anggaran LLM harian habis", error_code="budget_exceeded")
 
@@ -147,6 +172,8 @@ async def _pipeline(run: _Run) -> None:
     if block:
         return await run.finish("blocked", "guard.input.blocked", f"ditolak: {block}", reason=block)
     await run.emit("guard.input.passed", "running", "input lolos pemeriksaan")
+    if await _cancelled_boundary():
+        return
 
     universe = sorted(universe_symbols())
     holdings = await _holdings(run.session, row.user_id)
@@ -160,7 +187,10 @@ async def _pipeline(run: _Run) -> None:
         await run.emit("plan.completed", "planning", "rencana tetap daily brief", source="fixed")
     else:
         await run.emit("plan.started", "planning", "menyusun rencana")
+        if _budget_exceeded(rd):
+            return await run.finish("failed", "job.failed", "anggaran LLM harian habis", error_code="budget_exceeded")
         plan, call = await _run_planner_safe(question, universe, holding_tickers)
+        _record_llm_cost(rd, call.get("usage"))
         row.llm_calls = [*(row.llm_calls or []), {**call, "ts": utc_now_iso()}]
         row.language = plan.language
         if plan.intent == "refuse_execution":
@@ -172,6 +202,8 @@ async def _pipeline(run: _Run) -> None:
         if plan.intent == "off_topic":
             return await run.finish("blocked", "plan.refused", "di luar topik", intent=plan.intent)
         await run.emit("plan.completed", "planning", "rencana disusun", tickers=plan.tickers)
+        if await _cancelled_boundary():
+            return
 
     tickers = [t for t in plan.tickers if t in universe] or holding_tickers
     row.language = plan.language
@@ -181,14 +213,20 @@ async def _pipeline(run: _Run) -> None:
     if plan.need_indicators and tickers:
         indicators = get_indicators(rd, tickers)
         await run.emit("retrieve.indicators.completed", "retrieving", "indikator diambil", count=len(indicators))
+        if await _cancelled_boundary():
+            return
 
     prices = get_last_prices(holding_tickers) if holding_tickers else {}
     portfolio = get_portfolio(holdings, prices)
     await run.emit("retrieve.portfolio.completed", "retrieving", "portofolio dihitung")
+    if await _cancelled_boundary():
+        return
 
     evidence: list[dict] = []
     if plan.need_text and tickers:
         await run.emit("retrieve.vector.started", "retrieving", "pencarian teks")
+        if await _cancelled_boundary():
+            return
         from pinecone import Pinecone
 
         pc = Pinecone(api_key=s.pinecone_api_key)
@@ -203,7 +241,11 @@ async def _pipeline(run: _Run) -> None:
             )
         await run.emit("guard.retrieval.passed", "ranking", "bukti cukup")
         evidence = evidence_blocks(chunks, now)
+        if await _cancelled_boundary():
+            return
     await run.emit("rank.completed", "ranking", "bukti diurutkan")
+    if await _cancelled_boundary():
+        return
 
     # Konteks dan prompt. Teks evidence diperlakukan sebagai data tak tepercaya (6.2).
     ind_yaml = indicators_yaml(indicators)
@@ -224,9 +266,14 @@ async def _pipeline(run: _Run) -> None:
 
     messages = [SystemMessage(content=FINAL_SYSTEM), HumanMessage(content=user_msg)]
     await run.emit("llm.final.started", "generating", "jawaban final")
-    rec = await _final_call(messages)
-    row.llm_calls = [*(row.llm_calls or []), {"stage": "final", "model": s.final_model, "ts": utc_now_iso()}]
+    if _budget_exceeded(rd):
+        return await run.finish("failed", "job.failed", "anggaran LLM harian habis", error_code="budget_exceeded")
+    rec, final_call = await _final_call(messages)
+    _record_llm_cost(rd, final_call.get("usage"))
+    row.llm_calls = [*(row.llm_calls or []), {**final_call, "ts": utc_now_iso()}]
     await run.emit("llm.final.completed", "validating", "jawaban final diterima")
+    if await _cancelled_boundary():
+        return
 
     # Rail 3: output. Satu kali perbaikan, lalu gagal bila masih salah.
     context_text = "\n".join([ind_yaml, port_yaml, ev_text])
@@ -236,7 +283,11 @@ async def _pipeline(run: _Run) -> None:
         await run.emit("guard.output.repaired", "generating", "perbaikan jawaban",
                        errors=errors)
         messages = [*messages, HumanMessage(content=REPAIR.format(errors="\n".join(errors)))]
-        rec = await _final_call(messages)
+        if _budget_exceeded(rd):
+            return await run.finish("failed", "job.failed", "anggaran LLM harian habis", error_code="budget_exceeded")
+        rec, repair_call = await _final_call(messages)
+        _record_llm_cost(rd, repair_call.get("usage"))
+        row.llm_calls = [*(row.llm_calls or []), {**repair_call, "stage": "final_repair", "ts": utc_now_iso()}]
         errors = output_rail(rec, allowed_ids, context_text, assessment_requested)
         if errors:
             return await run.finish("insufficient", "guard.output.failed", "jawaban tidak lolos validasi",
@@ -265,12 +316,17 @@ async def _run_planner_safe(question: str, universe: list[str], tickers: list[st
     return await asyncio.to_thread(run_planner, question, _today_utc(), universe, tickers)
 
 
-async def _final_call(messages) -> Recommendation:
+async def _final_call(messages) -> tuple[Recommendation, dict]:
     s = get_settings()
-    primary = make_chat_model(s.final_model).with_structured_output(Recommendation)
+    primary = make_chat_model(s.final_model).with_structured_output(Recommendation, include_raw=True)
     chain = primary
     if s.fallback_model:
         chain = primary.with_fallbacks(
-            [make_chat_model(s.fallback_model).with_structured_output(Recommendation)]
+            [make_chat_model(s.fallback_model).with_structured_output(Recommendation, include_raw=True)]
         )
-    return await asyncio.to_thread(chain.invoke, messages)
+    raw = await asyncio.to_thread(chain.invoke, messages)
+    rec: Recommendation = raw["parsed"]
+    ai = raw.get("raw")
+    usage = getattr(ai, "usage_metadata", None) if ai is not None else None
+    model = getattr(ai, "response_metadata", {}).get("model_name", s.final_model) if ai is not None else s.final_model
+    return rec, {"stage": "final", "model": model, "usage": usage}

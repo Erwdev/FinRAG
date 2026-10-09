@@ -34,7 +34,7 @@ variable "api_reserved_concurrency" {
 
 variable "worker_enabled" {
   type        = bool
-  default     = false
+  default     = true
   description = "Aktifkan event source mapping SQS ke finrag-worker. Diaktifkan pada jam 18 sampai 26 (bagian 13)."
 }
 
@@ -67,5 +67,5 @@ variable "ssm_parameter_names" {
     "LANGFUSE_SECRET_KEY",
     "HANDOFF_WEBHOOK_URL",
   ]
-  description = "Nama parameter SSM (di bawah ssm_path). Nilai diisi manual, tidak masuk state (ignore_changes)."
+  description = "Nama parameter SSM (di bawah ssm_path). Nilai diisi manual di luar Terraform agar tidak masuk state."
 }

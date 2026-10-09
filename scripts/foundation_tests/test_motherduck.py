@@ -64,11 +64,15 @@ def check_ro_cannot_write() -> bool:
         return _result("RO tidak bisa menulis", None, "set MOTHERDUCK_TOKEN_RO")
     con = duckdb.connect("md:finrag", config={"motherduck_token": token, "home_directory": "/tmp"})
     try:
-        con.execute("CREATE TABLE IF NOT EXISTS mart.probe_should_fail (x INTEGER)")
-        con.execute("DROP TABLE IF EXISTS mart.probe_should_fail")
+        try:
+            con.execute("CREATE TABLE IF NOT EXISTS mart.probe_should_fail (x INTEGER)")
+        except duckdb.Error as exc:
+            return _result("RO tidak bisa menulis", True, f"ditolak saat CREATE: {str(exc)[:120]}")
+        try:
+            con.execute("DROP TABLE IF EXISTS mart.probe_should_fail")
+        except duckdb.Error as exc:
+            return _result("RO tidak bisa menulis", False, f"CREATE berhasil, DROP gagal: {str(exc)[:120]}")
         return _result("RO tidak bisa menulis", False, "CREATE TABLE berhasil. Token RO terlalu luas")
-    except duckdb.Error as exc:
-        return _result("RO tidak bisa menulis", True, f"ditolak: {str(exc)[:120]}")
     finally:
         con.close()
 

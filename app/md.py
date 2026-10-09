@@ -1,8 +1,4 @@
-"""Koneksi MotherDuck untuk API (token baca-saja), penjaga compute, dan SQL guard (Architecture.md 4.3, 5.2, 1.2).
-
-SQL guard di sini belum dipasang ke LLM (tool run_readonly_sql baru di blok 18 sampai 26). Fungsi
-check_readonly_sql sudah tersedia dan teruji saat blok itu tiba.
-"""
+"""Koneksi MotherDuck untuk API (token baca-saja), penjaga compute, dan SQL guard (Architecture.md 4.3, 5.2, 1.2)."""
 
 from __future__ import annotations
 
@@ -21,7 +17,7 @@ from app.settings import get_settings
 
 QUERY_TIMEOUT_SECONDS = 10
 ROW_LIMIT = 500
-ALLOWED_TABLES = {"finrag.mart.mart_ohlcv_1d", "finrag.mart.mart_indicators"}
+ALLOWED_TABLES = {"finrag.mart.mart_ohlcv_1d", "finrag.mart.mart_indicators", "finrag.mart.mart_feed"}
 BANNED_FUNC_PREFIXES = ("read_", "glob", "parquet_", "duckdb_", "pragma_", "md_")
 BANNED_FUNCS = {"query", "query_table", "getenv", "current_setting", "load_extension", "install_extension"}
 PATH_LIKE = re.compile(r"(s3://|gs://|https?://|file:|/)", re.IGNORECASE)
@@ -106,6 +102,7 @@ def _month_key() -> str:
 
 def run_query(redis_client, sql: str, params: list | None = None) -> tuple[list[str], list[tuple]]:
     """Jalankan SELECT dengan batas waktu dan penghitung detik. Return (kolom, baris)."""
+    safe_sql = check_readonly_sql(sql)
     s = get_settings()
     month = _month_key()
     used = int(redis_client.get(md_seconds(month)) or 0)
@@ -117,7 +114,7 @@ def run_query(redis_client, sql: str, params: list | None = None) -> tuple[list[
     timer.start()
     started = time.monotonic()
     try:
-        cur = con.execute(sql, params or [])
+        cur = con.execute(safe_sql, params or [])
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description] if cur.description else []
     except duckdb.InterruptException as exc:

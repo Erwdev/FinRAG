@@ -19,7 +19,8 @@ from app.jobs_service import (
     find_cached_brief,
     holdings_hash,
 )
-from app.redis_keys import IDEM_TTL_SECONDS, idem_chat, rl_brief, rl_chat
+from app.guardrails.rails import input_rail
+from app.redis_keys import IDEM_TTL_SECONDS, idem_brief, idem_chat, rl_brief, rl_chat
 
 router = APIRouter()
 
@@ -53,6 +54,18 @@ def _quota_error(msg: str) -> HTTPException:
     return HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, msg)
 
 
+async def _get_idempotent_job(session: AsyncSession, rd, uid: uuid.UUID, key: str) -> ChatJob | None:
+    existing = rd.get(key)
+    if not existing:
+        return None
+    if str(existing).startswith("pending:"):
+        raise HTTPException(409, "permintaan sedang diproses")
+    row = await session.get(ChatJob, uuid.UUID(existing))
+    if row is not None and row.user_id == uid:
+        return row
+    return None
+
+
 @router.post("/chat", status_code=202)
 async def post_chat(
     body: ChatIn,
@@ -61,14 +74,21 @@ async def post_chat(
 ):
     rd = get_redis()
     uid = uuid.UUID(user.id)
+    question, block = input_rail(body.question)
+    if block:
+        raise HTTPException(422, f"ditolak: {block}")
 
     # Idempotensi: klik ulang dengan client_request_id yang sama mengembalikan job yang sama.
     idem_key = idem_chat(user.id, body.client_request_id)
-    existing = rd.get(idem_key)
-    if existing:
-        row = await session.get(ChatJob, uuid.UUID(existing))
-        if row is not None and row.user_id == uid:
-            return _job_response(row)
+    hold_value = f"pending:{uuid.uuid4()}"
+    existing_row = await _get_idempotent_job(session, rd, uid, idem_key)
+    if existing_row is not None:
+        return _job_response(existing_row)
+    if not rd.set(idem_key, hold_value, nx=True, ex=IDEM_TTL_SECONDS):
+        existing_row = await _get_idempotent_job(session, rd, uid, idem_key)
+        if existing_row is not None:
+            return _job_response(existing_row)
+        raise HTTPException(409, "permintaan sedang diproses")
 
     now = dt.datetime.now(dt.timezone.utc)
     hour_key = rl_chat(user.id, now.strftime("%Y%m%d%H"))
@@ -76,14 +96,16 @@ async def post_chat(
     if count == 1:
         rd.expire(hour_key, 2 * 3600)
     if count > CHAT_LIMIT_PER_HOUR:
+        rd.delete(idem_key)
         raise _quota_error("batas chat per jam tercapai")
 
     if body.session_id is not None:
         chat_session = await session.get(ChatSession, body.session_id)
         if chat_session is None or chat_session.user_id != uid:
+            rd.delete(idem_key)
             raise HTTPException(404, "session not found")
     else:
-        chat_session = await create_session(session, uid, title=body.question[:80])
+        chat_session = await create_session(session, uid, title=question[:80])
 
     try:
         row = await create_job(
@@ -92,14 +114,18 @@ async def post_chat(
             user_id=uid,
             chat_session_id=chat_session.id,
             kind="chat",
-            question=body.question,
+            question=question,
             holdings_hash_value=None,
             language=DEFAULT_LANGUAGE,
         )
     except QueueUnavailable:
+        rd.delete(idem_key)
         raise HTTPException(503, "antrean job tidak tersedia")
+    except Exception:
+        rd.delete(idem_key)
+        raise
 
-    rd.set(idem_key, str(row.id), nx=True, ex=IDEM_TTL_SECONDS)
+    rd.set(idem_key, str(row.id), ex=IDEM_TTL_SECONDS)
     return _job_response(row)
 
 
@@ -112,11 +138,22 @@ async def post_daily_brief(
 ):
     rd = get_redis()
     uid = uuid.UUID(user.id)
+    idem_key = idem_brief(user.id, body.client_request_id)
+    hold_value = f"pending:{uuid.uuid4()}"
+    existing_row = await _get_idempotent_job(session, rd, uid, idem_key)
+    if existing_row is not None:
+        return _job_response(existing_row)
+    if not rd.set(idem_key, hold_value, nx=True, ex=IDEM_TTL_SECONDS):
+        existing_row = await _get_idempotent_job(session, rd, uid, idem_key)
+        if existing_row is not None:
+            return _job_response(existing_row)
+        raise HTTPException(409, "permintaan sedang diproses")
 
     holdings = (
         await session.execute(select(Holding).where(Holding.user_id == uid).order_by(Holding.ticker))
     ).scalars().all()
     if not holdings:
+        rd.delete(idem_key)
         raise HTTPException(422, "portofolio kosong")
     h = holdings_hash(
         [(x.ticker, str(x.quantity), None if x.avg_cost is None else str(x.avg_cost)) for x in holdings]
@@ -125,6 +162,7 @@ async def post_daily_brief(
     if not body.force:
         cached = await find_cached_brief(session, uid, h)
         if cached is not None:
+            rd.set(idem_key, str(cached.id), ex=IDEM_TTL_SECONDS)
             response.status_code = 200
             return _job_response(cached, cached=True)
     else:
@@ -134,6 +172,7 @@ async def post_daily_brief(
         if count == 1:
             rd.expire(key, 2 * 24 * 3600)
         if count > BRIEF_FORCE_PER_DAY:
+            rd.delete(idem_key)
             raise _quota_error("batas force daily brief per hari tercapai")
 
     chat_session = await create_session(session, uid, title="Rekomendasi Hari Ini")
@@ -149,8 +188,13 @@ async def post_daily_brief(
             language=DEFAULT_LANGUAGE,
         )
     except QueueUnavailable:
+        rd.delete(idem_key)
         raise HTTPException(503, "antrean job tidak tersedia")
+    except Exception:
+        rd.delete(idem_key)
+        raise
 
+    rd.set(idem_key, str(row.id), ex=IDEM_TTL_SECONDS)
     response.status_code = 202
     return _job_response(row)
 

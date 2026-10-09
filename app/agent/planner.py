@@ -14,11 +14,11 @@ def run_planner(question: str, today: str, universe: list[str], tickers: list[st
 
     s = get_settings()
     # Fallback juga harus mengembalikan Plan terstruktur, jadi with_structured_output dipasang di kedua cabang.
-    primary = make_chat_model(s.planner_model).with_structured_output(Plan)
+    primary = make_chat_model(s.planner_model).with_structured_output(Plan, include_raw=True)
     chain = primary
     if s.fallback_model:
         chain = primary.with_fallbacks(
-            [make_chat_model(s.fallback_model).with_structured_output(Plan)]
+            [make_chat_model(s.fallback_model).with_structured_output(Plan, include_raw=True)]
         )
     messages = [
         SystemMessage(content=PLANNER_SYSTEM),
@@ -31,5 +31,9 @@ def run_planner(question: str, today: str, universe: list[str], tickers: list[st
             )
         ),
     ]
-    plan: Plan = chain.invoke(messages)
-    return plan, {"stage": "planner", "model": s.planner_model}
+    raw = chain.invoke(messages)
+    plan: Plan = raw["parsed"]
+    ai = raw.get("raw")
+    usage = getattr(ai, "usage_metadata", None) if ai is not None else None
+    model = getattr(ai, "response_metadata", {}).get("model_name", s.planner_model) if ai is not None else s.planner_model
+    return plan, {"stage": "planner", "model": model, "usage": usage}

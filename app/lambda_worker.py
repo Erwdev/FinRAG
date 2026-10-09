@@ -1,8 +1,8 @@
 """Handler Lambda finrag-worker (Architecture.md 3.2, 8.5, 14.12, 14.16).
 
 Satu pesan SQS berisi {"job_id": "..."}. Batch size 1 (infra/terraform/modules/worker).
-- Klaim atomik: UPDATE chat_job SET status='running' WHERE id=? AND status='queued' RETURNING id.
-  Pesan duplikat atau ulangan tidak menjalankan job dua kali (idempoten).
+- Klaim atomik: UPDATE chat_job SET status='running' untuk queued atau status aktif yang stale.
+  Pesan duplikat/ulangan tidak menjalankan job dua kali; retry bisa mengambil alih job yang stale.
 - Pembatalan: job:{id}:cancel dicek sebelum klaim.
 - Kesalahan infrastruktur (DB, Redis) dilempar ulang agar SQS mencoba lagi lalu masuk DLQ.
   Kesalahan pipeline sudah ditandai failed di dalam run_chat_job dan tidak diulang.
@@ -17,7 +17,7 @@ import logging
 import uuid
 from typing import Any
 
-from sqlalchemy import update
+from sqlalchemy import and_, or_, update
 
 from app.agent.pipeline import run_chat_job
 from app.cache import get_redis, utc_now_iso
@@ -30,13 +30,22 @@ log = logging.getLogger("finrag.worker")
 
 
 async def _claim(session, job_id: uuid.UUID) -> bool:
-    """Klaim atomik queued -> running. True hanya bila baris ini yang berhasil diklaim."""
+    """Klaim atomik queued/stale-active -> running. True bila baris ini berhasil diambil."""
     import datetime as dt
 
+    now = dt.datetime.now(dt.timezone.utc)
+    stale_before = now - dt.timedelta(seconds=150)
+    active_statuses = ("running", "planning", "retrieving", "ranking", "generating", "validating")
     stmt = (
         update(ChatJob)
-        .where(ChatJob.id == job_id, ChatJob.status == "queued")
-        .values(status="running", updated_at=dt.datetime.now(dt.timezone.utc))
+        .where(
+            ChatJob.id == job_id,
+            or_(
+                ChatJob.status == "queued",
+                and_(ChatJob.status.in_(active_statuses), ChatJob.updated_at < stale_before),
+            ),
+        )
+        .values(status="running", updated_at=now)
         .returning(ChatJob.id)
     )
     claimed = (await session.execute(stmt)).scalar_one_or_none()

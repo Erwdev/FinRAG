@@ -12,6 +12,7 @@ import pytest
 from app.agent import pipeline
 from app.agent.schemas import Plan
 from app.db.models import ChatJob
+from app.settings import get_settings
 
 
 class FakeRedis:
@@ -34,6 +35,12 @@ class FakeRedis:
     def rpush(self, key, *values):
         self.lists.setdefault(key, []).extend(values)
         return len(self.lists[key])
+
+    def incrby(self, key, amount):
+        cur = int(self.data.get(key, 0) or 0)
+        cur += amount
+        self.data[key] = cur
+        return cur
 
     def llen(self, key):
         return len(self.lists.get(key, []))
@@ -65,6 +72,16 @@ class FakeSession:
 
     async def commit(self):
         return None
+
+
+@pytest.fixture(autouse=True)
+def settings_env(monkeypatch):
+    monkeypatch.setenv("CLERK_JWKS_URL", "https://example.test/jwks")
+    monkeypatch.setenv("CLERK_ISSUER", "https://example.test")
+    monkeypatch.setenv("DATABASE_URL", "******localhost:5432/finrag")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def _job(question: str) -> ChatJob:

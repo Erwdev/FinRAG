@@ -59,6 +59,10 @@ def idem_chat(user_id: str, client_request_id: str) -> str:
     return f"idem:chat:{user_id}:{client_request_id}"
 
 
+def idem_brief(user_id: str, client_request_id: str) -> str:
+    return f"idem:brief:{user_id}:{client_request_id}"
+
+
 def rl_chat(user_id: str, yyyymmddhh: str) -> str:
     """Maksimum 20 chat per jam (rl:chat)."""
     return f"rl:chat:{user_id}:{yyyymmddhh}"
