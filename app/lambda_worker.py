@@ -20,10 +20,11 @@ from typing import Any
 from sqlalchemy import and_, or_, update
 
 from app.agent.pipeline import run_chat_job
-from app.cache import get_redis, utc_now_iso
+from app.clock import utc_now_iso
+from app.infra.redis import get_redis
 from app.db.models import ChatJob
-from app.db.session import get_sessionmaker
-from app.redis_keys import job, job_cancel, job_events
+from app.infra.postgres import get_sessionmaker
+from app.domain.chat.redis_keys import job, job_cancel, job_events
 from app.settings import get_settings
 
 log = logging.getLogger("finrag.worker")

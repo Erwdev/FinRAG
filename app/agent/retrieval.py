@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 
-from app.guardrails.rails import RailResult, rerank, retrieval_rail
+from app.domain.guardrails.rails import RailResult, rerank, retrieval_rail
+from app.infra.retry import transient_retry
 from app.settings import get_settings
 
 TOP_K = 30
@@ -20,6 +21,7 @@ def _field(obj, name):
     return obj[name] if isinstance(obj, dict) else getattr(obj, name)
 
 
+@transient_retry(attempts=3)
 def embed_query(pc, text: str) -> list[float]:
     s = get_settings()
     emb = pc.inference.embed(
@@ -28,6 +30,12 @@ def embed_query(pc, text: str) -> list[float]:
         parameters={"input_type": "query", "truncate": "END"},
     )
     return _values(emb[0])
+
+
+@transient_retry(attempts=3)
+def _query_index(index, **kwargs):
+    # Query bersifat baca saja, aman diulang.
+    return index.query(**kwargs)
 
 
 def search_text(
@@ -47,7 +55,8 @@ def search_text(
 
     vector = embed_query(pc, question)
     index = pc.Index(s.pinecone_index)
-    res = index.query(
+    res = _query_index(
+        index,
         vector=vector,
         top_k=TOP_K,
         namespace=NAMESPACE,

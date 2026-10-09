@@ -145,7 +145,7 @@ Perkiraan kasar. Ukur ulang setelah 24 jam pertama berjalan.
 | Pinecone Inference | 5 juta token per bulan | Kira-kira 1 juta token per bulan | `EMBED_MONTHLY_TOKEN_CAP` (4000000). Counter Redis dengan taksiran karakter dibagi 4. Bila terlampaui, lewati embedding baru dan catat `embed.skipped_quota` |
 | Upstash Redis | 256 MB, 500 ribu command per bulan | Sekitar 150 command per job chat, ditambah polling dashboard | Polling adaptif, TTL cache, alert 80 persen di dasbor Upstash |
 | Neon | 0.5 GB, 100 CU-jam per bulan | Hitungan MB. Compute hanya menyala saat API menyentuh DB | Cache lookup `app_user` 5 menit di memori, pakai pooler |
-| AWS Lambda | Belum diverifikasi: 1 juta request dan 400 ribu GB-detik per bulan | Satu job maksimum 60 detik pada 1769 MB (sekitar 106 GB-detik per job, kira-kira 3 ribu job per bulan) | Batas waktu pipeline 100 detik, `maximum_concurrency` 3, budget alert AWS |
+| AWS Lambda | Belum diverifikasi: 1 juta request dan 400 ribu GB-detik per bulan | Satu job maksimum 100 detik pada 1769 MB (sekitar 173 GB-detik per job, kira-kira 2 ribu job per bulan) | Batas waktu pipeline 100 detik (`asyncio.timeout`, Lambda 120 detik), `maximum_concurrency` 3, budget alert AWS |
 | SQS | Belum diverifikasi: 1 juta request per bulan | Hitungan ratusan | Budget alert |
 | S3, ECR, SSM, CloudWatch Logs | Belum diverifikasi | Hitungan MB | Budget alert, retensi log 14 hari, lifecycle ECR (simpan 3 image) |
 | MotherDuck | 10 GB storage, 10 jam compute Pulse per bulan (belum diverifikasi) | Load dari S3 dan dbt 1 kali sehari, query dashboard dan chat banyak ter-cache | `MD_MONTHLY_SECONDS_CAP` (28800 detik). Counter Redis `md:seconds:{yyyymm}`. Bila terlampaui, API melayani cache lama dan menolak query baru dengan 503 |
@@ -527,7 +527,7 @@ dbt memakai adapter dbt-duckdb dengan path `md:finrag`. Komputasi berjalan di Mo
 
 Fallback CoinGecko hanya menyediakan harga penutupan harian. Untuk baris sumber `coingecko`, open, high, dan low diisi sama dengan close (indikator hanya memakai close, sehingga aman) dan uji `high >= low` tetap lulus.
 
-EMA12 dan EMA26 tidak dihitung di dbt karena rekursi tidak praktis di SQL dbt. EMA dihitung di Python dengan fungsi murni (tanpa pandas) di `app/indicators.py`, dipakai oleh route chart dan tool agent. Rumus: `ema_t = alpha * close_t + (1 - alpha) * ema_(t-1)` dengan `alpha = 2 / (span + 1)`.
+EMA12 dan EMA26 tidak dihitung di dbt karena rekursi tidak praktis di SQL dbt. EMA dihitung di Python dengan fungsi murni (tanpa pandas) di `app/domain/market/indicators.py`, dipakai oleh route chart dan tool agent. Rumus: `ema_t = alpha * close_t + (1 - alpha) * ema_(t-1)` dengan `alpha = 2 / (span + 1)`.
 
 Aturan chunking: teks RSS (title ditambah summary) dipotong 800 karakter dengan overlap 100, maksimum 4 chunk per artikel (umumnya satu chunk). Tweet satu chunk. Teks yang menyebut beberapa ticker menghasilkan satu baris chunk per ticker, sehingga `chunk_id = hash(source_id, chunk_index, ticker)`. Satu chunk harus tetap di bawah sekitar 500 token (batas input model embedding).
 
@@ -775,6 +775,8 @@ Batas biaya: counter harian `cost:llm:{yyyymmdd}` di Redis. Jika melewati `DAILY
 
 Prompt ditulis dalam bahasa Inggris karena model mengikuti instruksi dengan lebih konsisten. Jawaban kepada pengguna mengikuti bahasa pengguna.
 
+Implementasi: teks default disimpan di `config/prompts.yaml` (kunci `planner_system`, `planner_user`, `final_system`, `final_user`, `repair`), dimuat oleh `app/agent/prompt_store.py` (`get_prompts()`), lalu dibungkus `ChatPromptTemplate` di `app/agent/prompts.py`. Tidak ada teks prompt di kode Python. Sumber dipilih env `PROMPT_SOURCE` (`file` default, atau `langfuse`) dengan label `PROMPT_LABEL` (default `production`). Mode `langfuse` memuat prompt `finrag-planner`, `finrag-final` (chat) dan `finrag-repair` (text) dari Langfuse, placeholder `{{var}}` dikonversi ke `{var}`. Setiap grup yang gagal jatuh ke YAML. Ubah prompt cukup di YAML atau di Langfuse, tanpa mengubah kode.
+
 Planner, system prompt:
 
 ```
@@ -934,7 +936,7 @@ Guardrail LangChain berbasis middleware (`before_agent`, `after_agent`, `PIIMidd
 
 Penjelasan rail cakupan: "skrip yang disetujui" adalah isi field skema `Recommendation` yang lolos pola di atas, ditambah teks pengungkapan yang selalu ditulis server (bagian 6.6). Pelanggaran langsung di-handoff, bukan diperbaiki, karena ini pernyataan yang tidak boleh keluar. Rail yang sama berlaku di tahap planner: intent `needs_human` langsung menghasilkan `handoff` tanpa retrieval dan tanpa LLM final.
 
-Implementasi acuan (`app/guardrails/rails.py`):
+Implementasi acuan (`app/domain/guardrails/rails.py`):
 
 ```python
 import re
@@ -1127,7 +1129,7 @@ NeMo Guardrails tidak mewajibkan server yang hidup terus. Pustaka itu dapat dipa
 
 ### 6.6 Pengungkapan AI, tanggung jawab finansial, dan serah ke manusia
 
-Tiga teks ini ditulis server dari berkas `app/guardrails/disclosures.py`, bukan oleh model. Bahasa dipilih dari `Plan.language` (bawaan `id`).
+Tiga teks ini ditulis server dari berkas `app/domain/guardrails/disclosures.py`, bukan oleh model. Bahasa dipilih dari `Plan.language` (bawaan `id`).
 
 | Kunci | Indonesia | Inggris |
 | --- | --- | --- |
@@ -1384,7 +1386,7 @@ Semua route berada di satu layanan `finrag-api`. Kolom peran: `user` berarti `ow
 | GET | `/prices/live` | user | Fallback polling harga terakhir seluruh universe (cache Redis 15 detik). Dipakai bila websocket browser gagal |
 | GET | `/charts/{ticker}` | user | Seri harga dan indikator (`range`: 3m, 6m, 1y), cache Redis 5 menit |
 | GET | `/feed` | user | Item berita dan X terbaru dari `mart_feed` (`limit`, `ticker`), cache Redis 2 menit |
-| GET | `/signals` | user | Sinyal indikator per ticker (fungsi murni di `app/signals.py`), cache Redis 5 menit |
+| GET | `/signals` | user | Sinyal indikator per ticker (fungsi murni di `app/domain/market/signals.py`), cache Redis 5 menit |
 | GET | `/status/freshness` | user | Kesegaran data per sumber (dari `freshness:*`) |
 | POST | `/chat` | user | Buat job. Body: `question`, `session_id` opsional, `client_request_id`. Respons 202 |
 | POST | `/chat/daily-brief` | user | Tombol Rekomendasi Hari Ini. Body: `client_request_id`, `force` opsional. Respons 202, atau 200 bila hasil cache dikembalikan |
@@ -1618,27 +1620,34 @@ finrag/
   app/
     lambda_api.py           # handler Mangum
     lambda_worker.py        # handler SQS, klaim job atomik
-    md.py                   # koneksi MotherDuck, sqlglot SQL guard, penghitung detik
     main.py                 # FastAPI (app.main:app)
     settings.py
-    auth/                   # verifikasi Clerk, lookup app_user, peran (tanpa OIDC)
-    routes/                 # portfolio, prices, charts, feed, signals, chat, jobs, handoffs, status (tanpa internal)
+    clock.py                # waktu UTC sebagai string ISO
+    infra/                  # klien eksternal, tanpa logika domain
+      redis.py              # Upstash Redis, helper JSON, event sistem, freshness, flow lock (bagian 8)
+      motherduck.py         # koneksi MotherDuck, sqlglot SQL guard, penghitung detik
+      postgres.py           # engine Neon dan sessionmaker
+      sqs.py                # kirim job ke SQS
+      clerk_jwks.py         # verifikasi JWT Clerk (JWKS)
+      retry.py              # tenacity untuk error sementara
+    auth/                   # dependensi FastAPI: lookup app_user, peran (tanpa OIDC)
     db/                     # model SQLAlchemy dan Alembic
-    redis_keys.py           # nama kunci dan event (bagian 8)
-    indicators.py           # EMA dan helper indikator murni
-    signals.py              # sinyal indikator deskriptif
-    sources/                # PriceSource (Binance, CoinGecko), akses harga terakhir
+    domain/
+      chat/                 # jobs_service.py, redis_keys.py (job, idempotensi, rate limit, biaya LLM)
+      market/               # indicators.py (EMA dan helper murni), signals.py, universe.py, redis_keys.py (harga, grafik, feed, ingest), sources/prices.py
+      portfolio/            # schemas.py
+      guardrails/           # rails.py (bagian 6.4), disclosures.py (bagian 6.6)
+    routes/                 # tipis: portfolio, prices, charts, feed, signals, chat, jobs, handoffs, status (tanpa internal)
     agent/
       pipeline.py           # run_chat_job
       planner.py
+      llm.py                # klien LLM lewat Cloudflare AI Gateway
       tools.py              # get_indicators, get_last_prices, get_price_history, get_portfolio, run_readonly_sql
       retrieval.py          # Pinecone, rerank
       context.py
-      prompts.py            # template bagian 6.2
+      prompts.py            # ChatPromptTemplate bagian 6.2, dibangun dari prompt_store
+      prompt_store.py       # muat config/prompts.yaml (default prompt, titik override Langfuse)
       schemas.py            # Plan dan Recommendation
-    guardrails/
-      rails.py              # bagian 6.4
-      disclosures.py        # bagian 6.6
   flows/
     ingest_daily.py
     scrape_x_next_ticker.py

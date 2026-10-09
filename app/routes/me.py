@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from app.auth.deps import CurrentUser, get_current_owner
-from app.schemas import MeOut
+from app.domain.portfolio.schemas import MeOut
 
 router = APIRouter()
 

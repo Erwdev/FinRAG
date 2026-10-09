@@ -19,20 +19,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.context import evidence_blocks, indicators_yaml, portfolio_yaml, render_evidence
 from app.agent.llm import LlmNotConfigured, make_chat_model
 from app.agent.planner import run_planner
-from app.agent.prompts import FINAL_SYSTEM, FINAL_USER, REPAIR
+from app.agent.prompts import FINAL_PROMPT, REPAIR
 from app.agent.retrieval import search_text
 from app.agent.schemas import Plan, Recommendation
 from app.agent.tools import get_indicators, get_last_prices, get_portfolio
-from app.cache import utc_now_iso
+from app.clock import utc_now_iso
 from app.db.models import ChatJob, Holding
-from app.guardrails.disclosures import get_disclosures
-from app.guardrails.rails import input_rail, output_rail, scope_rail
-from app.md import MdCapExceeded
-from app.redis_keys import cost_llm, job, job_cancel, job_events
+from app.domain.guardrails.disclosures import get_disclosures
+from app.domain.guardrails.rails import input_rail, output_rail, scope_rail
+from app.infra.motherduck import MdCapExceeded
+from app.domain.chat.redis_keys import cost_llm, job, job_cancel, job_events
 from app.settings import get_settings
-from app.universe import universe_symbols
+from app.domain.market.universe import universe_symbols
 
 DAILY_BRIEF_WINDOW_DAYS = 2
+WORKER_JOB_TIMEOUT_S = 100  # Architecture.md 3.2 langkah 4
 MICRO_USD = 1_000_000
 INPUT_MICRO_USD_PER_1K_TOKENS = 150
 OUTPUT_MICRO_USD_PER_1K_TOKENS = 600
@@ -140,7 +141,15 @@ async def run_chat_job(session: AsyncSession, rd, job_id: uuid.UUID) -> None:
         return
     run = _Run(session, rd, row)
     try:
-        await _pipeline(run)
+        # Batas aplikasi di bawah timeout Lambda worker (120 detik, Terraform). Timeout Lambda tidak
+        # bisa menulis status failed, jadi batas ini yang menandai job (Improvisation D1, D2).
+        async with asyncio.timeout(WORKER_JOB_TIMEOUT_S):
+            await _pipeline(run)
+    except TimeoutError:
+        await session.rollback()
+        # Objek lama kedaluwarsa setelah rollback. Ambil ulang sebelum menulis status akhir.
+        run.row = await session.get(ChatJob, job_id)
+        await run.finish("failed", "job.failed", "waktu habis", error_code="timeout")
     except MdCapExceeded:
         await run.finish("failed", "job.failed", "batas compute MotherDuck tercapai", error_code="md_cap")
     except LlmNotConfigured:
@@ -208,31 +217,46 @@ async def _pipeline(run: _Run) -> None:
     tickers = [t for t in plan.tickers if t in universe] or holding_tickers
     row.language = plan.language
 
-    # Retrieval: indikator dan portofolio dari sumber terstruktur, lalu vektor teks.
-    indicators: list[dict] = []
-    if plan.need_indicators and tickers:
-        indicators = get_indicators(rd, tickers)
+    # Retrieval paralel (Architecture.md 2 dan 5.1): indikator, harga portofolio, dan vektor saling independen.
+    # Pemanggilan sinkron berjalan di thread. Penulisan event tetap di event loop (AsyncSession tidak thread-safe).
+    want_ind = bool(plan.need_indicators and tickers)
+    want_text = bool(plan.need_text and tickers)
+
+    async def _vector():
+        if not want_text:
+            return None
+        from pinecone import Pinecone
+
+        pc = Pinecone(api_key=s.pinecone_api_key)
+        return await asyncio.to_thread(
+            search_text, pc, question, tickers, plan.text_window_days, plan.text_source_types, now
+        )
+
+    async def _none(value=None):
+        return value
+
+    if want_text:
+        await run.emit("retrieve.vector.started", "retrieving", "pencarian teks")
+    ind_res, prices, vec_res = await asyncio.gather(
+        asyncio.to_thread(get_indicators, rd, tickers) if want_ind else _none([]),
+        asyncio.to_thread(get_last_prices, holding_tickers) if holding_tickers else _none({}),
+        _vector(),
+    )
+
+    indicators: list[dict] = ind_res or []
+    if want_ind:
         await run.emit("retrieve.indicators.completed", "retrieving", "indikator diambil", count=len(indicators))
         if await _cancelled_boundary():
             return
 
-    prices = get_last_prices(holding_tickers) if holding_tickers else {}
     portfolio = get_portfolio(holdings, prices)
     await run.emit("retrieve.portfolio.completed", "retrieving", "portofolio dihitung")
     if await _cancelled_boundary():
         return
 
     evidence: list[dict] = []
-    if plan.need_text and tickers:
-        await run.emit("retrieve.vector.started", "retrieving", "pencarian teks")
-        if await _cancelled_boundary():
-            return
-        from pinecone import Pinecone
-
-        pc = Pinecone(api_key=s.pinecone_api_key)
-        result, chunks = search_text(
-            pc, question, tickers, plan.text_window_days, plan.text_source_types, now
-        )
+    if want_text:
+        result, chunks = vec_res
         await run.emit("retrieve.vector.completed", "retrieving", "pencarian selesai", kept=len(result.kept))
         if not result.sufficient:
             return await run.finish(
@@ -252,7 +276,7 @@ async def _pipeline(run: _Run) -> None:
     port_yaml = portfolio_yaml(portfolio["positions"])
     ev_text = render_evidence(evidence)
     assessment_requested = bool(plan.wants_assessment)
-    user_msg = FINAL_USER.format(
+    messages = FINAL_PROMPT.format_messages(
         assessment_requested=str(assessment_requested).lower(),
         as_of=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         portfolio_yaml=port_yaml,
@@ -262,9 +286,9 @@ async def _pipeline(run: _Run) -> None:
     )
     await run.emit("context.built", "generating", "konteks dibangun")
 
-    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_core.messages import HumanMessage
 
-    messages = [SystemMessage(content=FINAL_SYSTEM), HumanMessage(content=user_msg)]
+
     await run.emit("llm.final.started", "generating", "jawaban final")
     if _budget_exceeded(rd):
         return await run.finish("failed", "job.failed", "anggaran LLM harian habis", error_code="budget_exceeded")

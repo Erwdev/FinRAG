@@ -29,9 +29,9 @@ FLOW_NAME = "scrape_x_next_ticker"
 def scrape_x_next_ticker() -> dict:
     import dlt
 
-    from app.cache import mark_fresh, push_event
-    from app.redis_keys import FC_USED_TOTAL, X_BUCKET, X_DUE
-    from app.universe import load_universe
+    from app.infra.redis import mark_fresh, push_event
+    from app.domain.market.redis_keys import FC_USED_TOTAL, X_BUCKET, X_DUE
+    from app.domain.market.universe import load_universe
 
     log = get_run_logger()
     load_secrets()

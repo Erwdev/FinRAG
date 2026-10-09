@@ -51,7 +51,8 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "respx",
-    "ruff",
+    # Versi sama dengan yang terkunci di uv.lock. Pin agar lint lokal dan CI identik (Improvisation 4.1).
+    "ruff==0.16.10",
     "mypy",
     "pre-commit",
 ]

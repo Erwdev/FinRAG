@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from prefect import flow, get_run_logger  # noqa: E402
 
+from app.infra.retry import transient_retry  # noqa: E402
 from flows.config import dbt_dir, load_secrets, md_rw_connection, redis_client, require_env, single_run_lock  # noqa: E402
 
 FLOW_NAME = "build_and_embed"
@@ -33,6 +34,18 @@ def _month() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y%m")
 
 
+@transient_retry(attempts=3)
+def _embed_passages(pc, model: str, texts: list[str]):
+    # Retry hanya untuk error sementara (app/infra/retry.py). Embedding bersifat deterministik, jadi aman diulang.
+    return pc.inference.embed(model=model, inputs=texts, parameters={"input_type": "passage", "truncate": "END"})
+
+
+@transient_retry(attempts=3)
+def _upsert(index, vectors: list[dict]) -> None:
+    # Upsert dengan id tetap (chunk_id) bersifat idempoten: mengulang tidak menggandakan vektor.
+    index.upsert(vectors=vectors, namespace=NAMESPACE)
+
+
 def _pending_chunks(con) -> list[tuple]:
     return con.execute(
         "SELECT chunk_id, ticker, source_type, source_id, url, published_at, text, chunk_hash "
@@ -45,8 +58,8 @@ def build_and_embed() -> dict:
     from dbt.cli.main import dbtRunner
     from pinecone import Pinecone
 
-    from app.cache import mark_fresh, push_event
-    from app.redis_keys import embed_tokens
+    from app.infra.redis import mark_fresh, push_event
+    from app.domain.market.redis_keys import embed_tokens
 
     log = get_run_logger()
     load_secrets()
@@ -112,23 +125,12 @@ def build_and_embed() -> dict:
             vectors = []
             for j in range(0, len(batch), EMBED_BATCH):
                 sub = batch[j : j + EMBED_BATCH]
-                emb = pc.inference.embed(
-                    model=model,
-                    inputs=[c[6] for c in sub],
-                    parameters={"input_type": "passage", "truncate": "END"},
-                )
+                emb = _embed_passages(pc, model, [c[6] for c in sub])
                 for c, e in zip(sub, emb):
                     vectors.append((c, _values(e)))
-            index.upsert(
-                vectors=[
-                    {
-                        "id": c[0],
-                        "values": vec,
-                        "metadata": _metadata(c),
-                    }
-                    for c, vec in vectors
-                ],
-                namespace=NAMESPACE,
+            _upsert(
+                index,
+                [{"id": c[0], "values": vec, "metadata": _metadata(c)} for c, vec in vectors],
             )
             # Catat token per batch setelah upsert berhasil, agar kegagalan di tengah tidak melewati kuota.
             batch_tokens = sum(max(len(c[6]) // 4, 1) for c in batch)

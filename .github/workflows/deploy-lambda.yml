@@ -1,0 +1,55 @@
+# Deploy Lambda (finrag-api, finrag-worker) dari main. Improvisation 4.1.
+# Lint dijalankan di job sendiri agar workflow ini berdiri sendiri. Deploy hanya jika lint hijau.
+# Autentikasi AWS memakai OIDC (role assume), tanpa access key tersimpan di GitHub.
+name: deploy-lambda
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uvx ruff==0.16.10 check .
+
+  deploy:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          provenance: false
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/finrag-api:${{ github.sha }}
+      # Kedua Lambda memakai satu image (Dockerfile). Image diganti lewat CLI, sama seperti Terraform image_tag.
+      - name: Update finrag-api
+        run: |
+          aws lambda update-function-code --function-name finrag-api \
+            --image-uri "${{ steps.ecr.outputs.registry }}/finrag-api:${{ github.sha }}"
+          aws lambda wait function-updated --function-name finrag-api
+      - name: Update finrag-worker
+        if: vars.WORKER_ENABLED == 'true'
+        run: |
+          aws lambda update-function-code --function-name finrag-worker \
+            --image-uri "${{ steps.ecr.outputs.registry }}/finrag-api:${{ github.sha }}"
+          aws lambda wait function-updated --function-name finrag-worker

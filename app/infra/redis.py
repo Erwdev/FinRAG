@@ -1,13 +1,23 @@
 """Klien Upstash Redis (REST) dan helper kecil untuk JSON, event sistem, dan freshness."""
 
-import datetime as dt
 import json
 from functools import lru_cache
 
 from upstash_redis import Redis
 
-from app.redis_keys import EVENTS_SYSTEM, freshness
+from app.clock import utc_now_iso
 from app.settings import get_settings
+
+EVENTS_SYSTEM = "events:system"  # list, LTRIM ke 200 entri terakhir
+
+
+def freshness(source: str) -> str:
+    """source: prices, news, x, build."""
+    return f"freshness:{source}"
+
+
+def flow_lock(name: str) -> str:
+    return f"lock:flow:{name}"
 
 
 def make_redis(url: str, token: str) -> Redis:
@@ -20,10 +30,6 @@ def get_redis() -> Redis:
     if not s.upstash_redis_rest_url or not s.upstash_redis_rest_token:
         raise RuntimeError("UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN belum diset")
     return make_redis(s.upstash_redis_rest_url, s.upstash_redis_rest_token)
-
-
-def utc_now_iso() -> str:
-    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def get_json(r: Redis, key: str):

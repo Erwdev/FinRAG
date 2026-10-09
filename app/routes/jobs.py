@@ -3,13 +3,14 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import CurrentUser, get_current_owner
-from app.cache import get_redis
-from app.db.session import get_session
-from app.jobs_service import TERMINAL_STATUSES, get_owned_job, read_progress, terminal_payload
-from app.redis_keys import CANCEL_TTL_SECONDS, job_cancel
+from app.infra.postgres import get_session
+from app.infra.redis import get_redis
+from app.domain.chat.jobs_service import TERMINAL_STATUSES, get_owned_job, read_progress, terminal_payload
+from app.domain.chat.redis_keys import CANCEL_TTL_SECONDS, job_cancel
 
 router = APIRouter()
 
@@ -26,7 +27,7 @@ async def get_job(
         raise HTTPException(404, "job not found")
 
     rd = get_redis()
-    live = read_progress(rd, job_id, after_seq)
+    live = await run_in_threadpool(read_progress, rd, job_id, after_seq)
     status_now = row.status
     # Postgres lebih otoritatif untuk status terminal. Redis dipakai untuk progres dan event.
     if live["status"] and row.status not in TERMINAL_STATUSES:
@@ -55,5 +56,5 @@ async def cancel_job(
     if row.status in TERMINAL_STATUSES:
         return {"job_id": str(job_id), "status": row.status, "cancel_requested": False}
     # Worker memeriksa penanda ini di antara tahap (bagian 3.2). Tidak membatalkan panggilan LLM yang sedang berjalan.
-    get_redis().set(job_cancel(str(job_id)), "1", ex=CANCEL_TTL_SECONDS)
+    await run_in_threadpool(get_redis().set, job_cancel(str(job_id)), "1", ex=CANCEL_TTL_SECONDS)
     return {"job_id": str(job_id), "status": row.status, "cancel_requested": True}

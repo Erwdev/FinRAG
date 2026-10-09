@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.md import SqlRejected, check_readonly_sql
+from app.infra.motherduck import SqlRejected, check_readonly_sql
 
 
 def test_allows_select_on_allowlisted_mart_and_adds_limit():

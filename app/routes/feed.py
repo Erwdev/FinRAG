@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth.deps import CurrentUser, get_current_owner
-from app.cache import get_json, get_redis, set_json
-from app.md import MdCapExceeded, MdUnavailable, run_query
-from app.redis_keys import feed
-from app.universe import universe_symbols
+from app.infra.redis import get_json, get_redis, set_json
+from app.infra.motherduck import MdCapExceeded, MdUnavailable, run_query
+from app.domain.market.redis_keys import feed
+from app.domain.market.universe import universe_symbols
 
 router = APIRouter()
 CACHE_TTL = 120  # Architecture.md 8.1: feed:text, 2 menit

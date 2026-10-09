@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth.deps import CurrentUser, get_current_owner
-from app.cache import get_json, get_redis, set_json
-from app.md import MdCapExceeded, MdUnavailable, run_query
-from app.redis_keys import SIGNALS_LATEST
-from app.signals import describe
-from app.universe import universe_symbols
+from app.infra.redis import get_json, get_redis, set_json
+from app.infra.motherduck import MdCapExceeded, MdUnavailable, run_query
+from app.domain.market.redis_keys import SIGNALS_LATEST
+from app.domain.market.signals import describe
+from app.domain.market.universe import universe_symbols
 
 router = APIRouter()
 CACHE_TTL = 300

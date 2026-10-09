@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from app.indicators import ema
-from app.md import check_readonly_sql, run_query
-from app.sources.prices import latest_prices
+from app.domain.market.indicators import ema
+from app.infra.motherduck import check_readonly_sql, run_query
+from app.domain.market.sources.prices import latest_prices
 
 MAX_HISTORY_DAYS = 365
 

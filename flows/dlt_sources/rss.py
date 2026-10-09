@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import dlt
 import feedparser
 
-from app.universe import load_universe
+from app.domain.market.universe import load_universe
 
 _TAG = re.compile(r"<[^>]+>")
 _WS = re.compile(r"\s+")
@@ -37,6 +37,8 @@ def match_tickers(text: str) -> list[str]:
     write_disposition="append",
     primary_key="article_id",
     max_table_nesting=0,
+    # Teks: kolom boleh bertambah (evolve), sesuai Architecture.md 4.2.
+    schema_contract={"columns": "evolve"},
 )
 def raw_articles(feed_url: str):
     parsed = feedparser.parse(feed_url)

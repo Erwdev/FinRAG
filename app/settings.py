@@ -7,6 +7,7 @@ SSM_PATH dimuat ke os.environ (sekali per proses). Nilai yang sudah ada di env t
 import logging
 import os
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -66,6 +67,10 @@ class Settings(BaseSettings):
     langfuse_public_key: str | None = None
     langfuse_secret_key: str | None = None
     langfuse_host: str = "https://us.cloud.langfuse.com"
+
+    # Sumber prompt: "file" (config/prompts.yaml) atau "langfuse" (dengan fallback ke file)
+    prompt_source: Literal["file", "langfuse"] = "file"
+    prompt_label: str = "production"
 
     # LLM lewat Cloudflare AI Gateway saja (bagian 6.1)
     llm_base_url: str | None = None

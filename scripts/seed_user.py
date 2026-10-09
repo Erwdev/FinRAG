@@ -14,7 +14,7 @@ import sys
 
 from sqlalchemy import text
 
-from app.db.session import make_engine
+from app.infra.postgres import make_engine
 
 
 async def seed(clerk_user_id: str, email: str) -> None:

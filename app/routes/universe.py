@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from app.auth.deps import CurrentUser, get_current_owner
-from app.universe import load_universe
+from app.domain.market.universe import load_universe
 
 router = APIRouter()
 

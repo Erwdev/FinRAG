@@ -4,13 +4,15 @@ import datetime as dt
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import CurrentUser, get_current_owner
-from app.cache import get_redis, push_event, utc_now_iso
+from app.clock import utc_now_iso
 from app.db.models import ChatJob
-from app.db.session import get_session
+from app.infra.postgres import get_session
+from app.infra.redis import get_redis, push_event
 
 router = APIRouter()
 
@@ -61,5 +63,5 @@ async def resolve_handoff(
     row.handoff_resolved_at = dt.datetime.now(dt.timezone.utc)
     row.updated_at = row.handoff_resolved_at
     await session.commit()
-    push_event(get_redis(), "handoff.resolved", "handoff ditutup pemilik", job_id=str(job_id))
+    await run_in_threadpool(push_event, get_redis(), "handoff.resolved", "handoff ditutup pemilik", job_id=str(job_id))
     return {"job_id": str(job_id), "resolved": True, "resolved_at": utc_now_iso()}

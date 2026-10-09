@@ -12,8 +12,12 @@ import duckdb
 import sqlglot
 from sqlglot import exp
 
-from app.redis_keys import md_seconds
 from app.settings import get_settings
+
+
+def md_seconds(yyyymm: str) -> str:
+    """Counter detik query MotherDuck dari aplikasi (penjaga 10 jam compute)."""
+    return f"md:seconds:{yyyymm}"
 
 QUERY_TIMEOUT_SECONDS = 10
 ROW_LIMIT = 500

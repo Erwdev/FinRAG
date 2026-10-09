@@ -22,7 +22,8 @@ def make_chat_model(model: str):
         default_headers={"cf-aig-authorization": f"Bearer {s.cf_aig_token}"},
         model=model,
         temperature=0,
-        max_retries=1,
+        # Tanpa retry HTTP bawaan: satu-satunya percobaan ulang adalah fallback_model (Improvisation #32).
+        max_retries=0,
         timeout=60,
     )
 

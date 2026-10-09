@@ -10,15 +10,17 @@ import hashlib
 import json
 import uuid
 
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from upstash_redis import Redis
 
-from app.cache import push_event, utc_now_iso
+from app.clock import utc_now_iso
 from app.db.models import ChatJob, ChatSession
-from app.guardrails.disclosures import get_disclosures
-from app.job_queue import QueueUnavailable, enqueue_job
-from app.redis_keys import (
+from app.domain.guardrails.disclosures import get_disclosures
+from app.infra.redis import push_event
+from app.infra.sqs import QueueUnavailable, enqueue_job
+from app.domain.chat.redis_keys import (
     JOB_TTL_SECONDS,
     job,
     job_events,
@@ -75,6 +77,23 @@ async def create_job(
     await session.commit()
 
     key = job(str(row.id))
+    try:
+        # Redis (sinkron) dan SQS (boto3, sinkron) dijalankan di thread agar event loop tidak terblokir.
+        await run_in_threadpool(_publish_job, rd, row.id, user_id, kind, question)
+    except QueueUnavailable:
+        row.status = "failed"
+        row.error_code = "queue_unavailable"
+        row.updated_at = _now()
+        row.finished_at = row.updated_at
+        await session.commit()
+        await run_in_threadpool(rd.hset, key, values={"status": "failed", "error_code": "queue_unavailable"})
+        raise
+    return row
+
+
+def _publish_job(rd: Redis, job_id: uuid.UUID, user_id: uuid.UUID, kind: str, question: str | None) -> None:
+    """Siapkan hash dan event awal di Redis, lalu kirim ke SQS. Sinkron, dipanggil lewat run_in_threadpool."""
+    key = job(str(job_id))
     rd.hset(
         key,
         values={
@@ -90,23 +109,12 @@ async def create_job(
         },
     )
     rd.expire(key, JOB_TTL_SECONDS)
-    push_event(rd, "job.queued", "job masuk antrean", job_id=str(row.id))
-    rd.rpush(job_events(str(row.id)), json.dumps({"seq": 1, "ts": utc_now_iso(), "type": "job.queued",
+    push_event(rd, "job.queued", "job masuk antrean", job_id=str(job_id))
+    rd.rpush(job_events(str(job_id)), json.dumps({"seq": 1, "ts": utc_now_iso(), "type": "job.queued",
                                                   "stage": "queued", "message": "Job masuk antrean",
                                                   "data": {}}))
-    rd.expire(job_events(str(row.id)), JOB_TTL_SECONDS)
-
-    try:
-        enqueue_job(str(row.id))
-    except QueueUnavailable:
-        row.status = "failed"
-        row.error_code = "queue_unavailable"
-        row.updated_at = _now()
-        row.finished_at = row.updated_at
-        await session.commit()
-        rd.hset(key, values={"status": "failed", "error_code": "queue_unavailable"})
-        raise
-    return row
+    rd.expire(job_events(str(job_id)), JOB_TTL_SECONDS)
+    enqueue_job(str(job_id))
 
 
 async def get_owned_job(session: AsyncSession, user_id: uuid.UUID, job_id: uuid.UUID) -> ChatJob | None:

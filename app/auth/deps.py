@@ -9,13 +9,14 @@ import time
 from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.clerk import TokenError, verify_clerk_token
 from app.db.models import AppUser
-from app.db.session import get_session
+from app.infra.clerk_jwks import TokenError, verify_clerk_token
+from app.infra.postgres import get_session
 from app.settings import get_settings
 
 CACHE_TTL_SECONDS = 300
@@ -39,7 +40,8 @@ async def get_current_owner(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "missing bearer token")
 
     try:
-        claims = verify_clerk_token(creds.credentials, get_settings())
+        # JWKS diambil lewat HTTP sinkron (PyJWKClient): jalankan di thread agar event loop tidak terblokir.
+        claims = await run_in_threadpool(verify_clerk_token, creds.credentials, get_settings())
     except TokenError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid token")
 

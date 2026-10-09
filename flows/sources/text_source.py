@@ -12,9 +12,10 @@ import re
 from typing import Protocol
 from urllib.parse import quote
 
-import httpx
+from firecrawl import Firecrawl
 
-FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v1/scrape"
+from app.infra.retry import transient_retry
+
 X_SEARCH_URL = "https://x.com/search?q={q}&f=live"
 MIN_BLOCK_CHARS = 40
 MAX_TEXT_CHARS = 500
@@ -56,22 +57,19 @@ def parse_posts(markdown: str, url: str, ticker: str, limit: int) -> list[dict]:
     return items
 
 
+@transient_retry(attempts=2)  # 2 percobaan total: setiap percobaan bisa memakai satu kredit Firecrawl
+def _scrape(api_key: str, url: str) -> str:
+    # SDK resmi firecrawl-py (sudah di extra flows). Mengembalikan markdown halaman.
+    doc = Firecrawl(api_key=api_key).scrape(url, formats=["markdown"], only_main_content=True)
+    return doc.markdown or ""
+
+
 class FirecrawlXSource:
     def __init__(self, api_key: str):
         self.api_key = api_key
 
     def search(self, query: str, ticker: str, limit: int = 20) -> tuple[list[dict], int]:
         url = X_SEARCH_URL.format(q=quote(query))
-        resp = httpx.post(
-            FIRECRAWL_SCRAPE_URL,
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-            json={"url": url, "onlyMainContent": True},
-            timeout=120,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if not data.get("success"):
-            raise RuntimeError(f"firecrawl error: {data.get('error', 'unknown')}")
-        credits = int(data.get("creditsUsed") or 1)
-        markdown = (data.get("data") or {}).get("markdown") or ""
-        return parse_posts(markdown, url, ticker, limit), credits
+        markdown = _scrape(self.api_key, url)
+        # SDK tidak mengembalikan creditsUsed secara konsisten; satu scrape dihitung satu kredit (backlog.md 4).
+        return parse_posts(markdown, url, ticker, limit), 1

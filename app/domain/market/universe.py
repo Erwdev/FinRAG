@@ -5,8 +5,8 @@ from pathlib import Path
 
 import yaml
 
-# app/universe.py -> akar proyek (lokal) atau /var/task (Lambda, config/ disalin Dockerfile)
-UNIVERSE_PATH = Path(__file__).resolve().parent.parent / "config" / "universe.yaml"
+# app/domain/market/universe.py -> parents[3] = akar proyek (lokal) atau /var/task (Lambda, config/ disalin Dockerfile)
+UNIVERSE_PATH = Path(__file__).resolve().parents[3] / "config" / "universe.yaml"
 
 
 @lru_cache(maxsize=1)

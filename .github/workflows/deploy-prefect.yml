@@ -1,0 +1,40 @@
+# Deploy flow Prefect dari main, hanya jika flows/ atau prefect.yaml berubah. Improvisation 4.1.
+# Lint dijalankan di job sendiri agar workflow ini berdiri sendiri. Deploy hanya jika lint hijau.
+name: deploy-prefect
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uvx ruff==0.16.10 check .
+
+  deploy:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            flows:
+              - 'flows/**'
+              - 'prefect.yaml'
+      - if: steps.changes.outputs.flows == 'true'
+        uses: astral-sh/setup-uv@v6
+      - if: steps.changes.outputs.flows == 'true'
+        run: uv sync --frozen --extra flows
+      - if: steps.changes.outputs.flows == 'true'
+        env:
+          PREFECT_API_KEY: ${{ secrets.PREFECT_API_KEY }}
+          PREFECT_API_URL: ${{ secrets.PREFECT_API_URL }}
+        run: uv run prefect deploy --all

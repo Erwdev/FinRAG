@@ -78,7 +78,7 @@ def ingest_daily(backfill_days: int = 300) -> dict:
     load_secrets()
     r = redis_client()
 
-    from app.cache import mark_fresh, push_event
+    from app.infra.redis import mark_fresh, push_event
 
     with single_run_lock(r, FLOW_NAME) as acquired:
         if not acquired:

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from app.agent.schemas import PositionView, Recommendation
-from app.guardrails.rails import (
+from app.domain.guardrails.rails import (
     MAX_QUESTION_CHARS,
     input_rail,
     retrieval_rail,

@@ -3,7 +3,8 @@ import datetime as dt
 from fastapi import APIRouter, Depends
 
 from app.auth.deps import CurrentUser, get_current_owner
-from app.cache import get_redis, read_fresh, utc_now_iso
+from app.clock import utc_now_iso
+from app.infra.redis import get_redis, read_fresh
 
 router = APIRouter()
 SOURCES = ("prices", "news", "x", "build")

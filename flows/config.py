@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.cache import make_redis  # noqa: E402
-from app.redis_keys import flow_lock  # noqa: E402
+from app.infra.redis import make_redis  # noqa: E402
+from app.infra.redis import flow_lock  # noqa: E402
 
 SECRET_ENV_NAMES = (
     "MOTHERDUCK_TOKEN_RW",

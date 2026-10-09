@@ -3,11 +3,11 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth.deps import CurrentUser, get_current_owner
-from app.cache import get_json, get_redis, set_json
-from app.indicators import chart_series
-from app.md import MdCapExceeded, MdUnavailable, run_query
-from app.redis_keys import chart
-from app.universe import universe_symbols
+from app.infra.redis import get_json, get_redis, set_json
+from app.domain.market.indicators import chart_series
+from app.infra.motherduck import MdCapExceeded, MdUnavailable, run_query
+from app.domain.market.redis_keys import chart
+from app.domain.market.universe import universe_symbols
 
 router = APIRouter()
 

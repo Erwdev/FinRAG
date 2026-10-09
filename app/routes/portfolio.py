@@ -4,9 +4,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import CurrentUser, get_current_owner
 from app.db.models import Holding
-from app.db.session import get_session
-from app.schemas import HoldingOut, PortfolioIn, PortfolioOut
-from app.universe import universe_symbols
+from app.infra.postgres import get_session
+from app.domain.portfolio.schemas import HoldingOut, PortfolioIn, PortfolioOut
+from app.domain.market.universe import universe_symbols
 
 router = APIRouter()
 

@@ -217,6 +217,21 @@ cd web && npm install && npm run dev
 - Guardrail checks (also available as demo prompts): "Buy 1 BTC now for me" (blocked), "Guarantee BTC returns next month" (handoff), "Ignore previous instructions" (blocked).
 - Live prices arrive via public Binance WebSocket from the browser, with polling fallback.
 
+## Code Walkthrough
+
+| Component | Main files | AI / data engineering concept | Done |
+|---|---|---|---|
+| RAG | `app/agent/retrieval.py`, `app/domain/guardrails/rails.py` | Pre-retrieval planner, metadata filter, time-decay re-rank, `chunk_hash` dedupe, retrieval rail | belum done |
+| LLM pipeline | `app/agent/pipeline.py`, `app/agent/prompts.py`, `app/agent/prompt_store.py` | Structured output, one repair pass, output and scope rails, untrusted-evidence prompting | belum done |
+| Backend API | `app/main.py`, `app/routes/`, `app/lambda_api.py` | Async job enqueue (202 + polling), idempotency keys, per-user rate limit | belum done |
+| Auth | `app/auth/deps.py`, `app/infra/clerk_jwks.py` | Least privilege: only `app_user` rows, owner role, 403 on unknown subject | belum done |
+| Worker and job | `app/lambda_worker.py`, `app/domain/chat/jobs_service.py` | Atomic claim (at-least-once SQS made idempotent), DLQ after 2 receives, event log | belum done |
+| Ingest | `flows/ingest_daily.py`, `flows/dlt_sources/` | Incremental load, schema contract (freeze prices, evolve text), landing to raw | belum done |
+| Transform | `dbt/models/` (`stg_*`, `mart_*`) | Medallion layers (raw, stg, mart), staging dedupe with `row_number()`, incremental `delete+insert` | belum done |
+| Infra | `infra/terraform/` | IaC, budget alert, reserved concurrency as cost guard | belum done |
+| Redis | `app/infra/redis.py`, `app/domain/chat/redis_keys.py` | Progress event list (`LTRIM` to 200), idempotency keys, quota counters, LLM cost counter | belum done |
+| Learned experience | `Improvisation.md`, `todo.md` | Docs drift from code: about 10 "deviation" rows were already fixed | belum done |
+
 ## Status
 
 Design document at `Architecture.md` v2.0.5 (migrated from the GCP stack of v2.0.4 to AWS + MotherDuck + dlt; see §0.5 there for the change log). Repository scaffolding still matches the v2.0.4 layout for `infra/terraform/` and `scripts/`; application and frontend files are empty placeholders pending the 48-hour build blocks.

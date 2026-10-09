@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth.deps import CurrentUser, get_current_owner
-from app.cache import get_json, get_redis, set_json, utc_now_iso
-from app.redis_keys import PRICE_LIVE
-from app.sources.prices import latest_prices
-from app.universe import universe_symbols
+from app.clock import utc_now_iso
+from app.infra.redis import get_json, get_redis, set_json
+from app.domain.market.redis_keys import PRICE_LIVE
+from app.domain.market.sources.prices import latest_prices
+from app.domain.market.universe import universe_symbols
 
 router = APIRouter()
 CACHE_TTL = 15  # Architecture.md 8.1: price:live, 15 detik

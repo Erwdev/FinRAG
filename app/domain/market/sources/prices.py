@@ -12,7 +12,7 @@ import httpx
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 from app.settings import get_settings
-from app.universe import load_universe
+from app.domain.market.universe import load_universe
 
 COINGECKO_SIMPLE_PRICE = "https://api.coingecko.com/api/v3/simple/price"
 

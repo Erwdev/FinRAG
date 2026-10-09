@@ -1,0 +1,28 @@
+# CI: lint di setiap push (Improvisation 4.1). Tes unit hanya di pull request, supaya push kecil tetap cepat.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      # Versi ruff dikunci ke yang ada di uv.lock (0.16.10).
+      - run: uvx ruff==0.16.10 check .
+
+  test:
+    if: github.event_name == 'pull_request'
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --extra dev
+      - run: uv run pytest
