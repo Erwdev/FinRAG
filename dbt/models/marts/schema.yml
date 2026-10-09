@@ -1,0 +1,31 @@
+version: 2
+
+models:
+  - name: mart_ohlcv_1d
+    columns:
+      - name: ticker
+        tests: [not_null]
+      - name: trade_date
+        tests: [not_null]
+    tests:
+      - unique:
+          column_name: "ticker || '|' || cast(trade_date as varchar)"
+
+  - name: mart_indicators
+    columns:
+      - name: ticker
+        tests: [not_null]
+
+  - name: mart_text_chunks
+    columns:
+      - name: chunk_id
+        tests: [unique, not_null]
+      - name: source_type
+        tests:
+          - accepted_values:
+              values: ["news", "tweet"]
+
+  - name: mart_feed
+    columns:
+      - name: source_id
+        tests: [not_null]

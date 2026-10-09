@@ -1,4 +1,10 @@
-provider "google" {
-  project = var.project_id
-  region  = var.region
+provider "aws" {
+  region = var.region
+
+  default_tags {
+    tags = {
+      Project   = var.prefix
+      ManagedBy = "terraform"
+    }
+  }
 }

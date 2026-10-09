@@ -1,11 +1,15 @@
-output "app_sa_email" {
-  value = google_service_account.app.email
+output "api_role_arn" {
+  value = aws_iam_role.api.arn
 }
 
-output "tasks_invoker_sa_email" {
-  value = google_service_account.tasks_invoker.email
+output "worker_role_arn" {
+  value = aws_iam_role.worker.arn
 }
 
-output "flows_sa_email" {
-  value = google_service_account.flows.email
+output "prefect_writer_user_name" {
+  value = aws_iam_user.prefect_writer.name
+}
+
+output "md_reader_user_name" {
+  value = aws_iam_user.md_reader.name
 }

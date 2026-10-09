@@ -5,7 +5,6 @@
 ![Python](https://img.shields.io/badge/python-3.12-blue)
 ![Dependencies](https://img.shields.io/badge/dependencies-uv.lock-green)
 
-**Technology**:
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
 ![Next.js](https://img.shields.io/badge/Next.js-000000?logo=nextdotjs&logoColor=white)
 ![Terraform](https://img.shields.io/badge/Terraform-7B42BC?logo=terraform&logoColor=white)

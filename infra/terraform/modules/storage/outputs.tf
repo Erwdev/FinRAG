@@ -1,3 +1,7 @@
 output "bucket_name" {
-  value = google_storage_bucket.landing.name
+  value = aws_s3_bucket.landing.bucket
+}
+
+output "bucket_arn" {
+  value = aws_s3_bucket.landing.arn
 }

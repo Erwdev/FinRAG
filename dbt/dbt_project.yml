@@ -1,0 +1,23 @@
+name: finrag
+version: "0.1.0"
+config-version: 2
+profile: finrag
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+# Sesi MotherDuck memakai UTC agar perhitungan tanggal di mart_ohlcv_1d konsisten (bagian 4.3).
+on-run-start:
+  - "SET TimeZone='UTC'"
+
+models:
+  finrag:
+    staging:
+      +materialized: view
+      +schema: stg
+    marts:
+      +materialized: table
+      +schema: mart

@@ -1,44 +1,149 @@
-# Akun layanan sesuai bagian 3.4. Peran terikat di modul pemilik sumber daya.
-resource "google_service_account" "app" {
-  project      = var.project_id
-  account_id   = "sa-app"
-  display_name = "FinRAG API (Cloud Run)"
+# Identitas sesuai Architecture.md 3.4. Lambda memakai role (tanpa kunci statis).
+
+data "aws_iam_policy_document" "lambda_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+  }
 }
 
-resource "google_service_account" "tasks_invoker" {
-  project      = var.project_id
-  account_id   = "sa-tasks-invoker"
-  display_name = "Cloud Tasks invoker"
+# ---------- finrag-api-role ----------
+resource "aws_iam_role" "api" {
+  name               = "${var.prefix}-api-role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
 }
 
-resource "google_service_account" "flows" {
-  project      = var.project_id
-  account_id   = "sa-flows"
-  display_name = "Prefect flows"
+resource "aws_iam_role_policy_attachment" "api_logs" {
+  role       = aws_iam_role.api.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-# Peran proyek sesuai bagian 3.4.
-resource "google_project_iam_member" "app_tasks_enqueuer" {
-  project = var.project_id
-  role    = "roles/cloudtasks.enqueuer"
-  member  = "serviceAccount:${google_service_account.app.email}"
+data "aws_iam_policy_document" "api" {
+  statement {
+    sid       = "EnqueueChatJobs"
+    actions   = ["sqs:SendMessage", "sqs:GetQueueUrl"]
+    resources = [var.queue_arn]
+  }
+  statement {
+    sid       = "ReadSecretsByPath"
+    actions   = ["ssm:GetParametersByPath", "ssm:GetParameter"]
+    resources = ["arn:aws:ssm:${var.region}:${var.account_id}:parameter${var.ssm_path}*"]
+  }
+  statement {
+    sid       = "DecryptSsmDefaultKey"
+    actions   = ["kms:Decrypt"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ssm.${var.region}.amazonaws.com"]
+    }
+  }
 }
 
-resource "google_project_iam_member" "app_bq_job_user" {
-  project = var.project_id
-  role    = "roles/bigquery.jobUser"
-  member  = "serviceAccount:${google_service_account.app.email}"
+resource "aws_iam_role_policy" "api" {
+  name   = "${var.prefix}-api-inline"
+  role   = aws_iam_role.api.id
+  policy = data.aws_iam_policy_document.api.json
 }
 
-resource "google_project_iam_member" "flows_bq_job_user" {
-  project = var.project_id
-  role    = "roles/bigquery.jobUser"
-  member  = "serviceAccount:${google_service_account.flows.email}"
+# ---------- finrag-worker-role ----------
+resource "aws_iam_role" "worker" {
+  name               = "${var.prefix}-worker-role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
 }
 
-# sa-app bertindak sebagai sa-tasks-invoker saat membuat task (bagian 3.4).
-resource "google_service_account_iam_member" "app_acts_as_tasks_invoker" {
-  service_account_id = google_service_account.tasks_invoker.name
-  role               = "roles/iam.serviceAccountUser"
-  member             = "serviceAccount:${google_service_account.app.email}"
+resource "aws_iam_role_policy_attachment" "worker_logs" {
+  role       = aws_iam_role.worker.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+data "aws_iam_policy_document" "worker" {
+  statement {
+    sid = "ConsumeChatJobs"
+    actions = [
+      "sqs:ReceiveMessage",
+      "sqs:DeleteMessage",
+      "sqs:GetQueueAttributes",
+      "sqs:ChangeMessageVisibility",
+    ]
+    resources = [var.queue_arn]
+  }
+  statement {
+    sid       = "ReadSecretsByPath"
+    actions   = ["ssm:GetParametersByPath", "ssm:GetParameter"]
+    resources = ["arn:aws:ssm:${var.region}:${var.account_id}:parameter${var.ssm_path}*"]
+  }
+  statement {
+    sid       = "DecryptSsmDefaultKey"
+    actions   = ["kms:Decrypt"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ssm.${var.region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "worker" {
+  name   = "${var.prefix}-worker-inline"
+  role   = aws_iam_role.worker.id
+  policy = data.aws_iam_policy_document.worker.json
+}
+
+# ---------- finrag-prefect-writer (kunci dibuat manual, bukan di state) ----------
+resource "aws_iam_user" "prefect_writer" {
+  name = "${var.prefix}-prefect-writer"
+}
+
+data "aws_iam_policy_document" "prefect_writer" {
+  statement {
+    sid       = "WriteDltLanding"
+    actions   = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"]
+    resources = ["${var.landing_bucket_arn}/dlt/*"]
+  }
+  statement {
+    sid       = "ListDltLanding"
+    actions   = ["s3:ListBucket"]
+    resources = [var.landing_bucket_arn]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["dlt/*"]
+    }
+  }
+}
+
+resource "aws_iam_user_policy" "prefect_writer" {
+  name   = "${var.prefix}-prefect-writer-inline"
+  user   = aws_iam_user.prefect_writer.name
+  policy = data.aws_iam_policy_document.prefect_writer.json
+}
+
+# ---------- finrag-md-reader (MotherDuck membaca S3, baca-saja) ----------
+resource "aws_iam_user" "md_reader" {
+  name = "${var.prefix}-md-reader"
+}
+
+data "aws_iam_policy_document" "md_reader" {
+  statement {
+    sid       = "ReadLanding"
+    actions   = ["s3:GetObject"]
+    resources = ["${var.landing_bucket_arn}/*"]
+  }
+  statement {
+    sid       = "ListLanding"
+    actions   = ["s3:ListBucket"]
+    resources = [var.landing_bucket_arn]
+  }
+}
+
+resource "aws_iam_user_policy" "md_reader" {
+  name   = "${var.prefix}-md-reader-inline"
+  user   = aws_iam_user.md_reader.name
+  policy = data.aws_iam_policy_document.md_reader.json
 }
